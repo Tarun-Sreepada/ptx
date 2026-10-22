@@ -1,0 +1,4 @@
+world/**/*.bin filter=lfs diff=lfs merge=lfs -text
+world/**/*.png filter=lfs diff=lfs merge=lfs -text
+world/**/*.gltf filter=lfs diff=lfs merge=lfs -text
+world/**/*.glb filter=lfs diff=lfs merge=lfs -text

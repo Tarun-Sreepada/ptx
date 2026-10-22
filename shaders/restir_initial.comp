@@ -1,0 +1,69 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// ReSTIR DI: RIS over M light candidates, visibility reuse, then temporal reuse.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    uint idx = uint(p.y) * F.res.x + uint(p.x);
+    vec4 P = loadPos(p);
+    uint NL = lightCount();
+    if (P.w < 0.0 || F.lightInfo.y == 0u) { resCur[idx] = vec4(0); return; }
+
+    vec4 N4 = imageLoad(gNorm, p);
+    vec3 x = P.xyz, n = N4.xyz;
+    uint mat = uint(N4.w + 0.5);
+    float tw = imageLoad(gTan, p).w;
+    uint matL = matT(mat, tw < 0.0 ? -tw : 0.0);  // with translucency, for the light target
+    uint s = seedFor(p, 1u);
+    bool restir = (F.settings.z & FLAG_RESTIR) != 0u;
+    uint M = restir ? F.counts.z : 1u;
+
+    // RIS over M candidates from the power alias table (blue noise for the first one)
+    Reservoir r = Reservoir(0u, 0.0, 0.0, 0.0);
+    for (uint i = 0u; i < M; i++) {
+        float pt;
+        float u0 = i == 0u ? bn(p, 7u) : rnd(s);
+        vec2 uv = i == 0u ? bn2(p, 8u) : vec2(rnd(s), rnd(s));
+        uint li = sampleLightAlias(u0, pt);
+        if (li == NO_LIGHT || pt <= 0.0) { rnd(s); continue; }
+        uint y = packLight(li, uv);
+        updateRes(r, y, targetPdf(y, x, n, matL) / lightSourcePdf(pt, lightPoint(y)), rnd(s));
+    }
+    r.M = float(M);
+    float ph = targetPdf(r.y, x, n, matL);
+    r.W = ph > 0.0 ? r.wSum / (r.M * ph) : 0.0;
+
+    // visibility reuse: occluded samples don't propagate
+    if (r.W > 0.0) {
+        LightPoint l = lightPoint(r.y);
+        vec3 wi;
+        float dist;
+        lightIncident(l, x, wi, dist);
+        float side;
+        lambert(n, wi, matL, side);
+        if (!visible(x + n * (EPS * side), wi, shadowLength(l, dist))) { r.W = 0.0; r.wSum = 0.0; }
+    }
+
+    if (restir && (F.settings.z & FLAG_RESTIR_TEMPORAL) != 0u) {
+        vec2 pp;
+        if (prevPixel(x, pp)) {
+            ivec2 q = ivec2(floor(pp + 0.5));
+            if (similarPrev(q, x, n, mat)) {
+                Reservoir h = unpackRes(resPrev[uint(q.y) * F.res.x + uint(q.x)]);
+                h.M = min(h.M, 20.0 * r.M);
+                Reservoir c = Reservoir(r.y, 0.0, 0.0, 0.0);
+                updateRes(c, r.y, ph * r.W * r.M, rnd(s));
+                updateRes(c, h.y, targetPdf(h.y, x, n, matL) * h.W * h.M, rnd(s));
+                c.M = r.M + h.M;
+                float pc_ = targetPdf(c.y, x, n, matL);
+                c.W = pc_ > 0.0 ? c.wSum / (c.M * pc_) : 0.0;
+                r = c;
+            }
+        }
+    }
+    resCur[idx] = packRes(r);
+}

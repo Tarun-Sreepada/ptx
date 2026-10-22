@@ -1,0 +1,11 @@
+build/
+external/
+texcache/
+screenshots/
+traces/
+logs/
+pipeline_cache.bin
+imgui.ini
+world/bake/
+*.bak
+*.bak-*

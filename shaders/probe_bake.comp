@@ -1,0 +1,58 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define PROBES_WRITE
+#include "common.glsl"
+#include "path.glsl"
+
+// Progressive probe bake: one thread per probe, 64 sphere rays per pass, running average over passes.
+// pc.a volume, pc.b state (0 lights off, 1 on), pc.c first probe (volume-local), pc.d pass index.
+// Bakes what the GI pass would trace: sky, sun, static lights (not the dynamic orbs) and emitters, 3 bounces.
+layout(local_size_x = 64) in;
+
+const uint RAYS = 64u, BOUNCES = 3u;
+
+void main() {
+    uint v = pc.a;
+    uvec4 d = floatBitsToUint(vols[4u * v + 2u]);
+    uint i = pc.c + gl_GlobalInvocationID.x, total = d.x * d.y * d.z;
+    if (i >= total) return;
+    bakeVol = int(v);
+    bakeState = pc.b;
+    uvec3 c = uvec3(i % d.x, (i / d.x) % d.y, i / (d.x * d.y));
+    vec4 a = vols[4u * v];
+    vec3 x = a.xyz + (vec3(c) + 0.5) * a.w;
+
+    uint s = (i * 9781u + pc.d * 6271u + pc.b * 7919u) | 1u;
+    pcg(s);
+    uint orbs = F.bake.y, lights = F.bake.w > orbs ? F.bake.w - orbs : 0u;
+    vec4 shR = vec4(0), shG = vec4(0), shB = vec4(0);
+    float backs = 0.0;
+    for (uint k = 0u; k < RAYS; k++) {
+        // stratified uniform sphere (spherical Fibonacci, rotated per pass)
+        float fi = float(k) + rnd(s);
+        float z = 1.0 - 2.0 * fi / float(RAYS), r = sqrt(max(0.0, 1.0 - z * z));
+        float phi = fi * 2.39996323 + float(pc.d) * 1.3;
+        vec3 dir = vec3(r * cos(phi), z, r * sin(phi));
+        vec3 xs, ns;
+        bool back;
+        vec3 L = tracePath(x, dir, dir, BOUNCES, orbs, lights, vec2(0.0, 0.05), 1.0, s, xs, ns, back);
+        backs += back ? 1.0 : 0.0;
+        vec4 y = vec4(0.282095, 0.488603 * dir);
+        shR += L.r * y; shG += L.g * y; shB += L.b * y;
+    }
+    float norm = 4.0 * PI / float(RAYS);
+    shR *= norm; shG *= norm; shB *= norm;
+    float valid = backs / float(RAYS) < 0.2 ? 1.0 : 0.0;
+
+    uint base = probeBase(d, pc.b, i);
+    float t = 1.0 / float(pc.d + 1u);  // running average over passes
+    if (pc.d == 0u) {
+        probes[base] = shR; probes[base + 1u] = shG; probes[base + 2u] = shB;
+        probes[base + 3u] = vec4(valid, 0, 0, 0);
+    } else {
+        probes[base] = mix(probes[base], shR, t);
+        probes[base + 1u] = mix(probes[base + 1u], shG, t);
+        probes[base + 2u] = mix(probes[base + 2u], shB, t);
+        probes[base + 3u].x = min(probes[base + 3u].x, valid);
+    }
+}

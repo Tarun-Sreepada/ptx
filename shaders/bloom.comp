@@ -1,0 +1,45 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "post.glsl"
+
+// Physically based bloom (Jimenez, "Next generation post processing in Call of Duty: AW"): no threshold, the whole
+// image is blurred through a mip chain and a small fraction added back, so only very bright things visibly glow.
+// pc.a = 0: downsample into mip pc.b (13 taps; mip 0 from the HDR scene with a Karis average against fireflies).
+// pc.a = 1: upsample mip pc.b + 1 (3x3 tent) and add it into mip pc.b.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+vec3 src(vec2 uv, int mip) { return mip < 0 ? textureLod(hdrTex, uv, 0.0).rgb : textureLod(bloomTex, uv, float(mip)).rgb; }
+float karis(vec3 c) { return 1.0 / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722))); }
+
+void main() {
+    int m = int(pc.b);
+    ivec2 sz = imageSize(bloomMip[m]);
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, sz))) return;
+    vec2 uv = (vec2(p) + 0.5) / vec2(sz);
+    if (pc.a == 0u) {
+        int s = m - 1;
+        vec2 t = 1.0 / vec2(s < 0 ? textureSize(hdrTex, 0) : textureSize(bloomTex, s));
+        vec3 a = src(uv + t * vec2(-2, -2), s), b = src(uv + t * vec2(0, -2), s), c = src(uv + t * vec2(2, -2), s);
+        vec3 d = src(uv + t * vec2(-2, 0), s), e = src(uv, s), f = src(uv + t * vec2(2, 0), s);
+        vec3 g = src(uv + t * vec2(-2, 2), s), h = src(uv + t * vec2(0, 2), s), i = src(uv + t * vec2(2, 2), s);
+        vec3 j = src(uv + t * vec2(-1, -1), s), k = src(uv + t * vec2(1, -1), s), l = src(uv + t * vec2(-1, 1), s), n = src(uv + t * vec2(1, 1), s);
+        vec3 r;
+        if (s < 0) {  // Karis average per 2x2 block
+            vec3 g0 = (a + b + d + e) * 0.25, g1 = (b + c + e + f) * 0.25, g2 = (d + e + g + h) * 0.25, g3 = (e + f + h + i) * 0.25, g4 = (j + k + l + n) * 0.25;
+            float w0 = karis(g0) * 0.125, w1 = karis(g1) * 0.125, w2 = karis(g2) * 0.125, w3 = karis(g3) * 0.125, w4 = karis(g4) * 0.5;
+            r = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / (w0 + w1 + w2 + w3 + w4);
+        } else {
+            r = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + n) * 0.125;
+        }
+        imageStore(bloomMip[m], p, vec4(max(r, vec3(0)), 1));
+    } else {
+        vec2 t = 1.0 / vec2(textureSize(bloomTex, m + 1));
+        vec3 r = vec3(0);
+        for (int y = -1; y <= 1; y++)
+            for (int x = -1; x <= 1; x++)
+                r += src(uv + t * vec2(x, y), m + 1) * ((x == 0 ? 2.0 : 1.0) * (y == 0 ? 2.0 : 1.0) / 16.0);
+        imageStore(bloomMip[m], p, vec4(imageLoad(bloomMip[m], p).rgb + r, 1));
+    }
+}

@@ -1,0 +1,57 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Remodulate albedo, add emission, aerial perspective -> hdrImg (post.comp tonemaps). pc.a = final denoised image
+// (0 accum, 1 pingA, 2 pingB).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+vec3 waterScene(ivec2 q) {
+    vec3 E = imageLoad(gEmis, q).rgb;
+    if (imageLoad(gDepth, q).r < 0.0) return E;
+    vec4 f = pc.a == 0u ? imageLoad(accumColor, q) : (pc.a == 1u ? imageLoad(pingA, q) : imageLoad(pingB, q));
+    return pixelAlbedo(q) * f.rgb + E;
+}
+#include "water.glsl"
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    vec4 P = loadPos(p);
+    vec3 alb = pixelAlbedo(p);
+    vec3 E = imageLoad(gEmis, p).rgb;
+    vec3 dir = imageLoad(directImg, p).rgb, ind = imageLoad(indirectImg, p).rgb;
+    vec4 filt = pc.a == 0u ? imageLoad(accumColor, p) : (pc.a == 1u ? imageLoad(pingA, p) : imageLoad(pingB, p));
+    uint mode = F.settings.w;
+    bool isSky = P.w < 0.0;
+
+    vec3 col;
+    bool tonemap = true;
+    if (mode == 0u)      col = isSky ? E : alb * filt.rgb + E;
+    else if (mode == 1u) col = isSky ? E : alb * (dir + ind) + E;
+    else if (mode == 2u) col = isSky ? E : alb * dir + E;
+    else if (mode == 3u) col = isSky ? E : alb * ind;
+    else if (mode == 4u) { col = alb; tonemap = false; }
+    else if (mode == 5u) { col = isSky ? vec3(0) : imageLoad(gNorm, p).xyz * 0.5 + 0.5; tonemap = false; }
+    else if (mode == 6u) {
+        float h = imageLoad(accumMoments, p).z / max(F.params.y, 1.0);
+        col = isSky ? vec3(0) : mix(vec3(1, 0, 0), vec3(0, 1, 0), h); tonemap = false;
+    } else { col = vec3(sqrt(max(filt.a, 0.0))) * 4.0; }
+
+    if (mode <= 1u) {
+        Water w = shadeWater(p, cameraRay(p), P, col);
+        if (w.hit) { col = w.col; P = vec4(w.p, w.t); }
+        col = underwaterView(col, isSky ? 1e4 : P.w);
+    }
+
+    // aerial perspective: extinction along the view ray, in-scatter approximated by the sky toward the horizon
+    if (!isSky && mode <= 3u && F.params2.w > 0.0) {
+        vec3 d = cameraRay(p);
+        float h = max(P.y + VIEW_H, 0.0);
+        vec3 ext = (BR * exp(-h / HR) + vec3(BME * exp(-h / HM))) * F.params2.w;
+        vec3 T = exp(-ext * P.w);
+        col = col * T + sky(normalize(vec3(d.x, max(d.y, 0.03), d.z))) * (1.0 - T);
+    }
+    if (mode <= 1u) { vec4 fg = fogAt(p); col = col * fg.a + fg.rgb; }  // volumetric fog / god rays
+    imageStore(hdrImg, p, vec4(col, 1));  // debug views (tonemap false) are passed through by post.comp
+}

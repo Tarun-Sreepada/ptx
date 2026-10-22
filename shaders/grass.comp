@@ -1,0 +1,87 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// GPU-driven infinite grass. One thread per world-space grid cell around the camera:
+//  - blade position/shape come from a hash of the cell, so blades stay put as the camera moves
+//  - density falls off as (lodStart/d)^2 (~constant on screen); blades near the cutoff shrink
+//    smoothly to nothing and survivors widen, so there is no visible LOD swap
+//  - blades outside the FOV + margin (beyond the keep radius) are thinned, not dropped: off-screen grass still
+//    casts shadows and shows up in reflections / bounce light
+// Survivors are appended (animated with wind) into the vertex buffer the BLAS and raster pass use.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    int n = F.grassGrid.z;
+    if (g.x >= n || g.y >= n) return;
+    ivec2 cell = F.grassGrid.xy + g;
+    uint seed = hashu(uint(cell.x) * 73856093u ^ hashu(uint(cell.y) * 19349663u + 0x632be5abu));
+    uint h1 = hashu(seed ^ 0x9e3779b9u), h2 = hashu(seed + 0x7f4a7c15u), h3 = hashu(h2);
+    vec2 xz = (vec2(cell) + vec2(float(h1 & 0xFFFFu), float(h1 >> 16)) / 65535.0) * F.grassA.x;
+    float d = length(xz - F.camPos.xz);
+    float R = F.grassA.w;
+    if (d > R) return;
+
+    float lod = min(1.0, F.grassA.z * F.grassA.z / max(d * d, 1e-4)) * smoothstep(R, R * 0.7, d);
+    vec3 root = vec3(xz.x, terrainHeight(xz) - 0.03, xz.y);
+    // off-screen (outside the FOV + margin, beyond the keep radius): still emitted for shadows, reflections and
+    // bounce light, but thinned to grassB.w of the density; survivors widen so coverage stays about the same
+    if (d > F.grassB.z) {
+        vec3 c = root + vec3(0.0, 0.5, 0.0) - F.camPos.xyz;
+        const float r = 1.2;
+        float z = dot(c, F.camFwd.xyz);
+        bool out_ = z < -r ||
+            abs(dot(c, F.camRight.xyz)) > z * F.grassB.x + r * sqrt(1.0 + F.grassB.x * F.grassB.x) ||
+            abs(dot(c, F.camUp.xyz)) > z * F.grassB.y + r * sqrt(1.0 + F.grassB.y * F.grassB.y);
+        if (out_) lod *= F.grassB.w;
+    }
+    float mask = grassMask(xz);
+    float q = lod * mask;
+    float u = float(h2 & 0xFFFFu) / 65535.0;
+    if (u >= q) return;
+    float fade = clamp((q - u) / (0.3 * q), 0.0, 1.0);
+
+    uint slot = atomicAdd(grassCount, 1u);
+    if (slot >= uint(F.grassGrid.w)) return;
+    bladeSeed[slot] = seed;
+
+    vec4 br = bladeRand(seed);
+    bool dead = bladeDead(br), flower = bladeFlower(br);
+    float tuft = 0.85 + 0.3 * vnoise(xz * 0.7);
+    float H = mix(0.12, 1.1, grassHeight(xz)) * tuft * (0.7 + 0.6 * br.x) * F.grassA.y * fade;
+    if (dead) H *= 0.7;
+    if (flower) H *= 1.25;
+    float ang = float(h3 & 0xFFFFu) / 65535.0 * 6.2831853;
+    float W = (0.022 + 0.035 * fract(br.y * 5.0)) * min(inversesqrt(max(lod, 1e-4)), 5.0);
+    float bend = 0.1 + 0.3 * fract(br.y * 7.0) + (dead ? 0.35 : 0.0);
+    float ph = float(h3 >> 16) / 65535.0 * 6.2831853;
+
+    vec3 side = vec3(cos(ang), 0.0, sin(ang));
+    vec3 fwd = vec3(-sin(ang), 0.0, cos(ang));
+    // wind from the simulated wind map: direction and strength vary per place, gust fronts sweep through and
+    // the pressure waves where they collide make the blades pump
+    vec3 wm = windAt(root.xz);
+    float t = F.camPos.w;
+    float flutter = sin(t * F.wind.w * 1.3 + dot(root.xz, wm.xy) * 0.4 + ph * 0.5) * 0.5 + 0.5;
+    vec2 wv = wm.xy * (0.7 + 0.3 * flutter) * (1.0 + 0.05 * wm.z);
+    vec3 lean = fwd * bend + vec3(wv.x, 0.0, wv.y);
+    lean += side * (sin(t * F.wind.w * 3.1 + ph * 6.0) * 0.06 * length(wm.xy));
+    float drop = 1.0 - 0.35 * min(dot(lean, lean), 1.5);
+
+    uint base = slot * 21u;
+    for (uint l = 0u; l < 4u; l++) {
+        float s = float(l) / 3.0;
+        vec3 c = root + vec3(0.0, H * s * mix(1.0, drop, s), 0.0) + lean * (s * s * H);
+        if (l < 3u) {
+            float w = W * 0.5 * (1.0 - s * 0.7);
+            vec3 a = c - side * w, e = c + side * w;
+            uint v = base + l * 6u;
+            gv[v] = a.x; gv[v + 1u] = a.y; gv[v + 2u] = a.z;
+            gv[v + 3u] = e.x; gv[v + 4u] = e.y; gv[v + 5u] = e.z;
+        } else {
+            uint v = base + 18u;
+            gv[v] = c.x; gv[v + 1u] = c.y; gv[v + 2u] = c.z;
+        }
+    }
+}

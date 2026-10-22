@@ -1,0 +1,54 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Temporal accumulation (SVGF style): reproject history, blend, track luminance moments for variance.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    vec4 P = loadPos(p);
+    if (P.w < 0.0) { imageStore(accumColor, p, vec4(0)); imageStore(accumMoments, p, vec4(0)); return; }
+
+    vec4 N4 = imageLoad(gNorm, p);
+    vec3 n = N4.xyz;
+    uint mat = uint(N4.w + 0.5);
+    vec3 c = imageLoad(directImg, p).rgb + imageLoad(indirectImg, p).rgb;
+    float l = lum(c);
+    if (l > F.params.z) { c *= F.params.z / l; l = F.params.z; }
+
+    vec3 hc = vec3(0), hm = vec3(0);
+    float sw = 0.0;
+    vec2 pp;
+    if ((F.settings.z & FLAG_ACCUM) != 0u && prevPixel(P.xyz, pp)) {
+        ivec2 b = ivec2(floor(pp));
+        vec2 f = pp - vec2(b);
+        for (int i = 0; i < 4; i++) {
+            ivec2 o = ivec2(i & 1, i >> 1);
+            ivec2 q = b + o;
+            float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+            if (w > 0.0 && similarPrev(q, P.xyz, n, mat)) {
+                hc += w * imageLoad(histColor, q).rgb;
+                hm += w * imageLoad(histMoments, q).xyz;
+                sw += w;
+            }
+        }
+    }
+
+    vec3 color; float m1, m2, len;
+    if (sw > 0.01) {
+        hc /= sw; hm /= sw;
+        len = min(hm.z + 1.0, F.params.y);
+        float alpha = 1.0 / len;
+        color = mix(hc, c, alpha);
+        m1 = mix(hm.x, l, alpha);
+        m2 = mix(hm.y, l * l, alpha);
+    } else {
+        len = 1.0; color = c; m1 = l; m2 = l * l;
+    }
+    float var = max(m2 - m1 * m1, 0.0);
+    if (len < 4.0) var = max(var, l * l * (4.0 - len) * 0.25); // young history: assume noisy
+    imageStore(accumColor, p, vec4(color, var));
+    imageStore(accumMoments, p, vec4(m1, m2, len, 0));
+}

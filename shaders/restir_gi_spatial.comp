@@ -1,0 +1,77 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// ReSTIR GI spatial reuse + shading. Neighbour samples are reconnected to this pixel's visible
+// point with a Jacobian for the changed geometry, and checked with one visibility ray.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    uint idx = uint(p.y) * F.res.x + uint(p.x);
+    vec4 P = loadPos(p);
+    if ((F.settings.z & FLAG_NO_GI) != 0u) return;  // gi.comp wrote zero indirect
+    GIRes r = loadGICur(idx);
+    if (r.M < 0.0) { storeGIPrev(idx, GIRes(vec3(0), vec3(0), vec3(0), 0.0, 0.0, 0.0)); return; }  // baked (gi.comp shaded it)
+    if (P.w < 0.0) { storeGIPrev(idx, r); imageStore(indirectImg, p, vec4(0)); return; }
+
+    vec3 x0 = P.xyz;
+    Surf sf = loadSurf(p);
+    vec3 n0 = sf.n;
+    uint mat = sf.mat;
+    vec3 kd = surfDiffuseShare(sf, max(dot(n0, -cameraRay(p)), 1e-4)) * sf.ao;
+    uint s = seedFor(p, 4u);
+    bool borrowed = false;
+    // History is the temporal reservoir, not the spatial result: feeding spatially reused samples (with their
+    // Jacobian / visibility bias) back into the next frame's temporal reuse compounds that bias every frame,
+    // and surfaces next to walls and bright emitters slowly brighten to white.
+    storeGIPrev(idx, r);
+
+    if ((F.settings.z & FLAG_GI_SPATIAL) != 0u) {
+        GIRes c = r;
+        c.wSum = 0.0;
+        updateGI(c, r, giTarget(r, x0, n0) * r.W * r.M, rnd(s));
+        c.M = r.M;
+        for (uint k = 0u; k < F.counts.y; k++) {
+            float a = rnd(s) * 2.0 * PI, rad = sqrt(rnd(s)) * F.params2.x;
+            ivec2 q = p + ivec2(round(vec2(cos(a), sin(a)) * rad));
+            if (!inScreen(q) || q == p) continue;
+            vec4 qP = loadPos(q);
+            if (qP.w < 0.0) continue;
+            vec4 qN = imageLoad(gNorm, q);
+            if (uint(qN.w + 0.5) != mat) continue;
+            if (dot(n0, qN.xyz) < (mat == MAT_GRASS ? 0.5 : 0.9)) continue;
+            if (abs(qP.w - P.w) > 0.1 * P.w) continue;
+            GIRes o = loadGICur(uint(q.y) * F.res.x + uint(q.x));
+            if (o.M <= 0.0 || o.W <= 0.0) continue;
+
+            // Jacobian of moving the receiver from the neighbour's point to ours
+            vec3 dq = qP.xyz - o.x, dr = x0 - o.x;
+            float dq2 = dot(dq, dq), dr2 = dot(dr, dr);
+            float cq = abs(dot(o.n, dq * inversesqrt(dq2)));
+            float cr = abs(dot(o.n, dr * inversesqrt(dr2)));
+            float J = (cr * dq2) / max(cq * dr2, 1e-6);
+            if (J < 0.1 || J > 10.0 || isnan(J)) continue;
+
+            updateGI(c, o, giTarget(o, x0, n0) * o.W * o.M * J, rnd(s));
+            c.M += o.M;
+        }
+        float ph = giTarget(c, x0, n0);
+        c.W = ph > 0.0 ? c.wSum / (c.M * ph) : 0.0;
+        borrowed = c.x != r.x;
+        r = c;
+    }
+
+    vec3 Li = vec3(0);
+    if (r.W > 0.0) {
+        vec3 d = r.x - x0;
+        float dist = length(d);
+        vec3 wi = d / dist;
+        float c = max(dot(n0, wi), 0.0);
+        // a borrowed sample may be occluded from this pixel
+        if (c > 0.0 && (!borrowed || visible(x0 + n0 * EPS, wi, max(dist - 0.01, 0.0))))
+            Li = r.L * c / PI * r.W;
+    }
+    imageStore(indirectImg, p, vec4(Li * kd + imageLoad(specImg, p).rgb, 1));
+}

@@ -1,0 +1,49 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "post.glsl"
+
+// Auto exposure. pc.a = 0: centre-weighted log2-luminance histogram of the HDR scene (every 4th pixel).
+// pc.a = 1 (one group): mean EV of the 40..95 % percentile band -> exposure that maps it to middle grey, eased toward
+// over time (faster getting brighter than darker, like an eye leaving a dark room).
+layout(local_size_x = 16, local_size_y = 16) in;
+shared uint sh[128];
+
+void main() {
+    uint li = gl_LocalInvocationIndex;
+    if (pc.a == 0u) {
+        if (li < 128u) sh[li] = 0u;
+        barrier();
+        ivec2 sz = textureSize(hdrTex, 0);
+        ivec2 q = ivec2(gl_GlobalInvocationID.xy) * 4 + 2;
+        if (all(lessThan(q, sz))) {
+            vec3 c = texelFetch(hdrTex, q, 0).rgb;
+            float l = max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-8);
+            float b = clamp((log2(l) - EV_MIN) / (EV_MAX - EV_MIN), 0.0, 1.0) * 127.0;
+            vec2 uv = (vec2(q) / vec2(sz)) * 2.0 - 1.0;
+            uint w = 1u + uint(3.0 * max(1.0 - length(uv * vec2(1.0, 1.3)), 0.0));  // centre counts up to 4x
+            atomicAdd(sh[uint(b)], w);
+        }
+        barrier();
+        if (li < 128u && sh[li] > 0u) atomicAdd(hist[li], sh[li]);
+        return;
+    }
+    if (li != 0u) return;
+    float total = 0.0;
+    for (int i = 0; i < 128; i++) total += float(hist[i]);
+    float lo = total * 0.40, hi = total * 0.95, acc = 0.0, sumEV = 0.0, sumW = 0.0;
+    for (int i = 0; i < 128; i++) {
+        float n = float(hist[i]);
+        float take = clamp(min(acc + n, hi) - max(acc, lo), 0.0, n);
+        acc += n;
+        sumEV += take * (EV_MIN + (float(i) + 0.5) / 128.0 * (EV_MAX - EV_MIN));
+        sumW += take;
+    }
+    float ev = sumW > 0.0 ? sumEV / sumW : -2.0;
+    // middle grey 0.18 at the metered luminance, plus compensation; limited so night stays night-ish
+    float target = clamp(log2(0.18) - ev + F.post0.x, -6.0, 12.0);
+    float cur = expo.w > 0.5 ? log2(max(expo.x, 1e-6)) : target;
+    float speed = target > cur ? F.post0.z : F.post0.w;
+    cur += (target - cur) * (1.0 - exp(-F.post2.w * speed));
+    expo = vec4(exp2(cur), ev, target, 1.0);
+}

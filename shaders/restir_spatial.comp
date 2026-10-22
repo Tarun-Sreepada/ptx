@@ -1,0 +1,72 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// ReSTIR DI spatial reuse + final shading (1 shadow ray for the chosen light, 1 for the sun).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    uint idx = uint(p.y) * F.res.x + uint(p.x);
+    vec4 P = loadPos(p);
+    if (P.w < 0.0) { resPrev[idx] = vec4(0); imageStore(directImg, p, vec4(0)); return; }
+
+    Surf sf = loadSurf(p);
+    vec3 x = P.xyz, n = sf.n;
+    uint mat = sf.mat;
+    uint matL = matT(mat, sf.transl);
+    vec3 v = -cameraRay(p);
+    vec3 A = surfAlbedo(sf, max(dot(n, v), 1e-4));
+    uint s = seedFor(p, 2u);
+    uint NL = lightCount();
+    vec3 Ld = vec3(0);
+
+    if (F.lightInfo.y > 0u) {
+        Reservoir r = unpackRes(resCur[idx]);
+        uint flags = F.settings.z;
+        if ((flags & FLAG_RESTIR) != 0u && (flags & FLAG_RESTIR_SPATIAL) != 0u) {
+            Reservoir c = Reservoir(r.y, 0.0, 0.0, 0.0);
+            updateRes(c, r.y, targetPdf(r.y, x, n, matL) * r.W * r.M, rnd(s));
+            c.M = r.M;
+            for (uint k = 0u; k < F.counts.w; k++) {
+                float a = rnd(s) * 2.0 * PI, rad = sqrt(rnd(s)) * F.params.w;
+                ivec2 q = p + ivec2(round(vec2(cos(a), sin(a)) * rad));
+                if (!inScreen(q) || q == p) continue;
+                vec4 qP = loadPos(q);
+                if (qP.w < 0.0) continue;
+                vec4 qN = imageLoad(gNorm, q);
+                if (uint(qN.w + 0.5) != mat) continue;
+                if (dot(n, qN.xyz) < (mat == MAT_GRASS ? 0.5 : 0.9)) continue;
+                if (abs(qP.w - P.w) > 0.1 * P.w) continue;
+                Reservoir o = unpackRes(resCur[uint(q.y) * F.res.x + uint(q.x)]);
+                updateRes(c, o.y, targetPdf(o.y, x, n, matL) * o.W * o.M, rnd(s));
+                c.M += o.M;
+            }
+            float ph = targetPdf(c.y, x, n, matL);
+            c.W = ph > 0.0 ? c.wSum / (c.M * ph) : 0.0;
+            r = c;
+        }
+        resPrev[idx] = packRes(r);
+
+        if (r.W > 0.0 && sampleLightIndex(r.y) < NL) {
+            LightPoint l = lightPoint(r.y);
+            vec3 wi;
+            float dist;
+            vec3 Li = lightIncident(l, x, wi, dist);
+            vec3 fd;
+            vec3 f = evalBRDFSplit(sf, v, wi, fd);
+            // emitters seen in a near-mirror lobe are shared with the glossy path (glossyEmitWeight)
+            if (l.area > 0.0) f = fd + (f - fd) * (1.0 - glossyEmitWeight(sf));
+            float side = dot(n, wi) >= 0.0 ? 1.0 : -1.0;
+            if (f.r + f.g + f.b > 0.0 && visible(x + n * (EPS * side), wi, shadowLength(l, dist)))
+                Ld += Li * f * r.W;
+        }
+        Ld /= A;
+    } else {
+        resPrev[idx] = vec4(0);
+    }
+
+    Ld += sunDirectPrimary(x, sf, v, A, bn2(p, 0u));
+    imageStore(directImg, p, vec4(Ld, 1));
+}
