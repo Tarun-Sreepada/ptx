@@ -16,7 +16,7 @@ vec3 dynamicNEE(vec3 x, vec3 n, uint mat, inout uint s) { return lightNEE(x, n, 
 // Direction for one path through the glossy lobes (GGX specular, clearcoat, thin-walled transmission): the lobe
 // picked by its share of the albedo, the direction by visible-normal sampling. wgt = BRDF * cos / pdf; nOut = the
 // side the path leaves from; spread = the lobe's cone spread. False: no glossy energy toward this view.
-bool glossySample(Surf sf, vec3 v, inout uint s, out vec3 l, out vec3 nOut, out vec3 wgt, out float spread) {
+bool glossySample(Surf sf, vec3 v, vec3 u3, out vec3 l, out vec3 nOut, out vec3 wgt, out float spread) {
     vec3 n = sf.n, Tg = sf.T, Bt = cross(n, Tg);
     float nv = max(dot(n, v), 1e-4);
     vec3 vl = vec3(dot(v, Tg), dot(v, Bt), nv);
@@ -31,10 +31,10 @@ bool glossySample(Surf sf, vec3 v, inout uint s, out vec3 l, out vec3 nOut, out 
     float wT = lum(sf.base) * sf.trans * (1.0 - ks) * ccOver;
     float sum = wS + wC + wT;
     if (sum <= 1e-5) return false;
-    float u = rnd(s) * sum;
+    float u = u3.x * sum;
     bool coat = u >= wS && u < wS + wC, through = u >= wS + wC;
     vec2 al = coat ? vec2(ac) : a;
-    vec3 h = sampleVNDF(vl, al, rnd(s), rnd(s));
+    vec3 h = sampleVNDF(vl, al, u3.y, u3.z);
     vec3 ll = reflect(-vl, h);
     float vh = max(dot(vl, h), 0.0);
     if (through) {  // refraction into the glass through the sampled microfacet
@@ -88,7 +88,7 @@ void main() {
         Surf sf = loadSurf(p);
         if (surfGlossy(sf)) {
             vec3 v = -cameraRay(p), gN;
-            glossy = glossySample(sf, v, s, gl, gN, gW, gSpread);
+            glossy = glossySample(sf, v, vec3(bn(p, 16u), bn2(p, 17u)), gl, gN, gW, gSpread);  // blue noise
             gW /= surfAlbedo(sf, max(dot(n0, v), 1e-4));
             gSide = dot(gN, n0) < 0.0 ? -1.0 : 1.0;
             gEmit = glossyEmitWeight(sf);
@@ -104,6 +104,7 @@ void main() {
         vec2 cone = vec2(pixelSpread() * P.w, g ? pixelSpread() + gSpread : DIFFUSE_SPREAD);
         GIRes c;
         bool back;
+        pathSunU = k == 0u ? bn2(p, 4u) : vec2(-1);  // the first path's sun sample is blue noise too
         c.L = tracePath(x0, g ? n0 * gSide : n0, d, B, 0u, F.res.w, cone, g ? gEmit : 0.0, s, c.x, c.n, back);
         if (g) glossyL = gW * c.L;
         else if (restir) updateGI(r, c, lum(c.L) * PI, rnd(s));  // source pdf cos/pi, target lum(L) cos

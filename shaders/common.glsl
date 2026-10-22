@@ -499,15 +499,20 @@ vec3 underwaterSun(vec3 x) {
     return exp(-sigma * path) * max(focus, 0.0);
 }
 
-// Demodulated sun contribution (Lo / albedo) with a soft cone-sampled shadow ray.
-vec3 sunDirect(vec3 x, vec3 n, uint mat, inout uint s) {
+// Demodulated sun contribution (Lo / albedo) with a soft cone-sampled shadow ray; u: point on the sun disc.
+vec3 sunDirect(vec3 x, vec3 n, uint mat, vec2 u) {
     if (F.sunColor.r + F.sunColor.g + F.sunColor.b <= 0.0) return vec3(0);
-    vec3 l = sampleCone(F.sunDir.xyz, F.sunDir.w, s);
+    vec3 l = sampleConeU(F.sunDir.xyz, F.sunDir.w, u);
     float side;
     float c = lambert(n, l, mat, side);
     if (c <= 0.0) return vec3(0);
     if (!visible(x + n * (EPS * side), l, 1e4)) return vec3(0);  // path vertices: approximate in craters
     return F.sunColor.rgb * cloudShadow(x) * underwaterSun(x) * c / PI * (side < 0.0 ? TRANSLUCENT_TINT : vec3(1));
+}
+
+vec3 sunDirect(vec3 x, vec3 n, uint mat, inout uint s) {
+    float u0 = rnd(s);
+    return sunDirect(x, n, mat, vec2(u0, rnd(s)));
 }
 
 // GGX specular lobe (the waxy sheen on grass, dull highlight on rock).

@@ -48,6 +48,7 @@ vec3 lightsSum(vec3 x, vec3 n, uint mat, uint first, uint count) {
 // with FLAG_GI_CACHE the first hit adds exact direct light + the cell's cached indirect light, later hits the
 // cell's whole cached radiance. Vertices whose continuation was traced train the cache.
 #define PATH_REC 4u
+vec2 pathSunU = vec2(-1);  // >= 0: blue-noise sample for the sun at the first hit (gi.comp)
 vec3 tracePath(vec3 x0, vec3 n0, vec3 d, uint B, uint lFirst, uint lCount, vec2 cone, float emitW0, inout uint s, out vec3 xs, out vec3 ns, out bool back) {
     vec3 o = x0 + n0 * EPS, nn = n0, thr = vec3(1), L = vec3(0);
     xs = x0 + d * 1e4;
@@ -83,7 +84,7 @@ vec3 tracePath(vec3 x0, vec3 n0, vec3 d, uint B, uint lFirst, uint lCount, vec2 
         }
         bool cached = useCache && (b > 0u || !rcTrain) && rcLookup(h.p, h.n, E, Ed);
         if (cached && b > 0u) { L += thr * E; break; }
-        vec3 D = sunDirect(h.p, h.n, h.mat, s) + (bakeVol >= 0 ? lightsSum(h.p, h.n, h.mat, lFirst, lCount) : treeNEE(h.p, h.n, h.mat, s));
+        vec3 D = (b == 0u && pathSunU.x >= 0.0 ? sunDirect(h.p, h.n, h.mat, pathSunU) : sunDirect(h.p, h.n, h.mat, s)) + (bakeVol >= 0 ? lightsSum(h.p, h.n, h.mat, lFirst, lCount) : treeNEE(h.p, h.n, h.mat, s));
         L += thr * D;
         if (cached) { L += thr * max(E - Ed, vec3(0)); break; }
         if (nv < PATH_REC) { vP[nv] = h.p; vN[nv] = h.n; vL[nv] = L - thr * D; vT[nv] = thr; vD[nv] = D; nv++; }

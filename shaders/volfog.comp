@@ -59,10 +59,10 @@ void main() {
     vec3 amb = sky(vec3(0, 1, 0)) * 0.6 + sky(normalize(vec3(d.x, 0.15, d.z))) * 0.4;  // isotropic sky light
     // one light from the list, evaluated at one random step (estimator x STEPS)
     float pl;
-    uint li = F.fog1.x > 0.5 ? sampleLightAlias(rnd(s), pl) : NO_LIGHT;
-    int kl = int(rnd(s) * float(STEPS));
+    uint li = F.fog1.x > 0.5 ? sampleLightAlias(bn(fp, 14u), pl) : NO_LIGHT;
+    int kl = min(int(bn(fp, 15u) * float(STEPS)), STEPS - 1);
     LightPoint lp;
-    if (li != NO_LIGHT) lp = lightPoint(packLight(li, vec2(rnd(s), rnd(s))));
+    if (li != NO_LIGHT) lp = lightPoint(packLight(li, bn2(fp, 16u)));
 
     vec3 Lin = vec3(0);
     float T = 1.0;

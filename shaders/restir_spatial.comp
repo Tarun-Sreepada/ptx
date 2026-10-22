@@ -30,7 +30,8 @@ void main() {
             updateRes(c, r.y, targetPdf(r.y, x, n, matL) * r.W * r.M, rnd(s));
             c.M = r.M;
             for (uint k = 0u; k < F.counts.w; k++) {
-                float a = rnd(s) * 2.0 * PI, rad = sqrt(rnd(s)) * F.params.w;
+                vec2 un = bn2(p, 20u + 2u * k);  // blue-noise neighbour pattern
+                float a = un.x * 2.0 * PI, rad = sqrt(un.y) * F.params.w;
                 ivec2 q = p + ivec2(round(vec2(cos(a), sin(a)) * rad));
                 if (!inScreen(q) || q == p) continue;
                 vec4 qP = loadPos(q);
