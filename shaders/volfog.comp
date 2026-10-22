@@ -39,10 +39,11 @@ float fogDensity(vec3 p, float t) {
 
 void main() {
     ivec2 hp = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 hs = imageSize(fogImg);
+    ivec2 hs = F.fogRes.yz;
+    int div = F.fogRes.x;
     if (any(greaterThanEqual(hp, hs))) return;
     if (F.fog0.w < 0.5) { imageStore(fogImg, hp, vec4(0, 0, 0, 1)); return; }
-    ivec2 fp = min(hp * 2, ivec2(F.res.xy) - 1);
+    ivec2 fp = min(hp * div + div / 2, ivec2(F.res.xy) - 1);
     float depth = imageLoad(gDepth, fp).r;
     vec3 o = F.camPos.xyz, d = cameraRay(fp);
     float maxD = F.fog1.y;
@@ -94,7 +95,7 @@ void main() {
     float alpha = 1.0;
     vec4 hist = cur;
     if (prevPixel(ref, pp)) {
-        ivec2 q = ivec2(floor(pp * 0.5));
+        ivec2 q = ivec2(floor(pp / float(div)));
         if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, hs))) { hist = imageLoad(fogHist, q); alpha = F.fog1.w; }
     }
     imageStore(fogImg, hp, mix(hist, cur, alpha));

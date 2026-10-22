@@ -140,7 +140,7 @@ static const XImgDef xDefs[X_COUNT] = {
     {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES},
     {VK_FORMAT_R16G16B16A16_SFLOAT, OUTPUT_RES},   // HDR scene before post (post.glsl hdrTex)
     {VK_FORMAT_R16G16B16A16_SFLOAT, OUTPUT_RES},   // HDR display encoding (PQ / scRGB)
-    {VK_FORMAT_R16G16B16A16_SFLOAT, HALF_RES}, {VK_FORMAT_R16G16B16A16_SFLOAT, HALF_RES}};  // volumetric fog + its history
+    {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES}, {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES}};  // volumetric fog + its history (top-left 1/fogDiv used)
 // post-processing (post.glsl)
 static constexpr uint32_t BLOOM_MIPS = 7;
 static VkSampler postSampler;          // bilinear, clamp
@@ -333,6 +333,7 @@ struct Settings {
     int hdrMode = 0;                                // 0 SDR, 1 HDR10 (PQ), 2 scRGB
     float paperWhite = 203.f, peakNits = 1000.f;
     bool fog = true, fogLights = true;               // volumetric fog / god rays (volfog.comp)
+    int fogDiv = 2;                                  // fog resolution = render resolution / fogDiv (1..4)
     float fogDensity = 0.0007f, fogFalloff = 0.08f, fogAniso = 0.6f, fogNoise = 0.6f, fogDist = 150.f, fogBlend = 0.12f;
     float rain = 0.f, wetness = 0.f, puddles = 0.f;  // puddles: the old noise-placed ones; the world sim makes real ones  // weather (surface_fx.comp, post.comp)
     bool rainWets = true;                            // wetness follows the rain (dries slowly after)
@@ -395,6 +396,7 @@ struct UBO {
     float simBrush[4];                      // editor snow brush: x, z, radius (0 = off), m/s
     float fractal[4];                       // ground detail: mode (0 textures, 1 fractal, 2 hybrid), relief, pebbles, finest scale (m)
     int32_t craterGrid[4];                  // crater bins: first bin xz (16 m), bins per side, valid
+    int32_t fogRes[4];                      // volumetric fog: resolution divisor, grid width, height
 };
 
 struct Camera {
@@ -2982,6 +2984,8 @@ static void updateFrameData() {
         u.sim2[0] = S.snowfall / 3600.f; u.sim2[1] = S.dryRate; u.sim2[2] = S.waterMobility; u.sim2[3] = riverSwell;
         memcpy(u.simBrush, gSimBrush, 16);
         buildCraterBins(cam.pos.x, cam.pos.z);
+        int fd = std::clamp(S.fogDiv, 1, 4);
+        u.fogRes[0] = fd; u.fogRes[1] = ((int)W + fd - 1) / fd; u.fogRes[2] = ((int)H + fd - 1) / fd; u.fogRes[3] = 0;
         u.craterGrid[0] = cbOrigin[0]; u.craterGrid[1] = cbOrigin[1]; u.craterGrid[2] = CB_N; u.craterGrid[3] = cbValid ? 1 : 0;
         u.fractal[0] = (float)S.groundMode; u.fractal[1] = S.fractalRelief; u.fractal[2] = S.fractalPebbles; u.fractal[3] = S.fractalFinest;
         uint32_t nd = 0;
@@ -3565,7 +3569,8 @@ static void buildFrameGraph(uint32_t si, ImDrawData* dd) {
     const uint32_t fogR = g.resource("fog"), fogHistR = g.resource("fog history");
     g.add("surface fx", GFX, [=](VkCommandBuffer cb) { bind(cb); dispatch(cb, P_SURFACE_FX, gx, gy); })
         .read(accel, CS, ASR | R).write(gbuf, CS, RW);
-    g.add("volumetric fog", GFX, [=](VkCommandBuffer cb) { bind(cb); dispatch(cb, P_VOLFOG, (W / 2 + 8) / 8, (H / 2 + 8) / 8); })
+    g.add("volumetric fog", GFX, [=](VkCommandBuffer cb) { bind(cb); uint32_t fd = (uint32_t)std::clamp(S.fogDiv, 1, 4);
+        dispatch(cb, P_VOLFOG, ((W + fd - 1) / fd + 7) / 8, ((H + fd - 1) / fd + 7) / 8); })
         .read(accel, CS, ASR | R).read(gbuf, CS, R).read(skyR, CS, R).read(fogHistR, CS, R).write(fogR, CS, WR);
     g.add("ReSTIR DI", GFX, [=](VkCommandBuffer cb) {
         bind(cb);
@@ -3672,7 +3677,7 @@ static void buildFrameGraph(uint32_t si, ImDrawData* dd) {
     g.add("fog history", GFX, [=](VkCommandBuffer cb) {
         VkImageCopy r{};
         r.srcSubresource = r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        r.extent = {(W + 1) / 2, (H + 1) / 2, 1};
+        r.extent = {W, H, 1};
         vkCmdCopyImage(cb, ximgs[X_FOG].img, VK_IMAGE_LAYOUT_GENERAL, ximgs[X_FOGHIST].img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
     }).read(fogR, XFER, XR).read(hdr, XFER, XR).write(fogHistR, XFER, XW);
     // post: auto exposure (histogram -> adapted exposure), bloom mip chain, final tonemap / sharpen / display encode
@@ -5772,6 +5777,11 @@ static void drawUI() {
     if (ImGui::CollapsingHeader("Fog & god rays")) {
         ImGui::Checkbox("Volumetric fog", &S.fog);
         ImGui::BeginDisabled(!S.fog);
+        {
+            static const char* fogResNames[] = {"full", "1/2", "1/3", "1/4"};
+            int fi = std::clamp(S.fogDiv, 1, 4) - 1;
+            if (ImGui::SliderInt("Fog resolution", &fi, 0, 3, fogResNames[fi])) S.fogDiv = fi + 1;
+        }
         ImGui::SliderFloat("Density (at the ground)", &S.fogDensity, 0.0005f, 0.1f, "%.4f /m", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Height falloff", &S.fogFalloff, 0.005f, 1.f, "%.3f /m", ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Higher: the fog hugs the ground (valley mist). Lower: it fills the air (haze)");
@@ -5956,6 +5966,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-gi-probes")) S.giProbes = false;
         else if (!strcmp(argv[i], "--sun") && i + 2 < argc) { S.sunElev = (float)atof(argv[++i]); S.sunAzim = (float)atof(argv[++i]); }
         else if (!strcmp(argv[i], "--rain") && i + 1 < argc) { S.rain = (float)atof(argv[++i]); S.wetness = std::min(S.rain * 1.5f, 1.f); }
+        else if (!strcmp(argv[i], "--fog-div") && i + 1 < argc) S.fogDiv = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--fog") && i + 1 < argc) { S.fogDensity = (float)atof(argv[++i]); S.fog = S.fogDensity > 0.f; }
         else if (!strcmp(argv[i], "--borderless")) windowMode = 1;
         else if (!strcmp(argv[i], "--fullscreen")) windowMode = 2;

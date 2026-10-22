@@ -65,6 +65,7 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 simBrush;        // editor snow brush: x, z, radius (0 = off), metres per second (negative removes)
     vec4 fractal;         // ground detail (ground.glsl): x mode (0 textures, 1 fractal, 2 hybrid), y relief, z pebbles, w finest scale (m)
     ivec4 craterGrid;     // crater bins (material.glsl): xy first bin (16 m), z bins per side, w valid
+    ivec4 fogRes;         // volumetric fog: x resolution divisor (1 full .. 4 quarter), yz grid size (volfog.comp)
 } F;
 
 // Camera projection matching cameraRay(): reverse-Z (near plane 0.05 -> depth 1, infinity -> 0).
