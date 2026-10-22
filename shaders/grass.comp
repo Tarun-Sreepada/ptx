@@ -9,19 +9,34 @@
 //  - blades outside the FOV + margin (beyond the keep radius) are thinned, not dropped: off-screen grass still
 //    casts shadows and shows up in reflections / bounce light
 // Survivors are appended (animated with wind) into the vertex buffer the BLAS and raster pass use.
+// pc.a = 1 (animate): the blade set and slots of the last full pass are kept, one thread per slot re-animates
+// its blade in place, so the BLAS can be refit instead of rebuilt (main.cpp grassRefit).
 layout(local_size_x = 8, local_size_y = 8) in;
 
+// bladeSeed holds 3 uints per blade slot: seeds [0, cap), then the blade's cell (x, y) at [cap + 2 * slot]
+uint seedCap() { return uint(bladeSeed.length()) / 3u; }
+
 void main() {
-    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
-    int n = F.grassGrid.z;
-    if (g.x >= n || g.y >= n) return;
-    ivec2 cell = F.grassGrid.xy + g;
+    bool anim = pc.a == 1u;
+    ivec2 cell;
+    uint slot = 0u;
+    if (anim) {
+        slot = gl_WorkGroupID.x * 64u + gl_LocalInvocationIndex;
+        if (slot >= min(grassCount, uint(F.grassGrid.w))) return;
+        uint c = seedCap() + 2u * slot;
+        cell = ivec2(int(bladeSeed[c]), int(bladeSeed[c + 1u]));
+    } else {
+        ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+        int n = F.grassGrid.z;
+        if (g.x >= n || g.y >= n) return;
+        cell = F.grassGrid.xy + g;
+    }
     uint seed = hashu(uint(cell.x) * 73856093u ^ hashu(uint(cell.y) * 19349663u + 0x632be5abu));
     uint h1 = hashu(seed ^ 0x9e3779b9u), h2 = hashu(seed + 0x7f4a7c15u), h3 = hashu(h2);
     vec2 xz = (vec2(cell) + vec2(float(h1 & 0xFFFFu), float(h1 >> 16)) / 65535.0) * F.grassA.x;
     float d = length(xz - F.camPos.xz);
     float R = F.grassA.w;
-    if (d > R) return;
+    if (d > R && !anim) return;
 
     float lod = min(1.0, F.grassA.z * F.grassA.z / max(d * d, 1e-4)) * smoothstep(R, R * 0.7, d);
     vec3 root = vec3(xz.x, terrainHeight(xz) - 0.03, xz.y);
@@ -39,12 +54,17 @@ void main() {
     float mask = grassMask(xz);
     float q = lod * mask;
     float u = float(h2 & 0xFFFFu) / 65535.0;
-    if (u >= q) return;
-    float fade = clamp((q - u) / (0.3 * q), 0.0, 1.0);
+    if (u >= q && !anim) return;
+    float fade = clamp((q - u) / (0.3 * max(q, 1e-6)), 0.0, 1.0);  // animate: a blade that would now be culled shrinks away
 
-    uint slot = atomicAdd(grassCount, 1u);
-    if (slot >= uint(F.grassGrid.w)) return;
-    bladeSeed[slot] = seed;
+    if (!anim) {
+        slot = atomicAdd(grassCount, 1u);
+        if (slot >= uint(F.grassGrid.w)) return;
+        bladeSeed[slot] = seed;
+        uint c = seedCap() + 2u * slot;
+        bladeSeed[c] = uint(cell.x);
+        bladeSeed[c + 1u] = uint(cell.y);
+    }
 
     vec4 br = bladeRand(seed);
     bool dead = bladeDead(br), flower = bladeFlower(br);

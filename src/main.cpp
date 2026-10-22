@@ -251,7 +251,15 @@ static uint32_t lastBladeCount = 0, grassGridN = 0;
 static float terrainCenter[2] = {1e9f, 1e9f};
 static bool terrainDirty = true;
 // grass is regenerated (culled, LOD'd, compacted) every frame, so its BLAS is rebuilt rather than refit
-static const VkBuildAccelerationStructureFlagsKHR grassFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+static const VkBuildAccelerationStructureFlagsKHR grassFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
+                                                               VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+// Grass BLAS refit: while the camera stays put the blade set is kept and only re-animated (grass.comp pc.a = 1),
+// and the BLAS is updated in place; a full rebuild every GRASS_REBUILD frames or when the camera moves / turns.
+static constexpr int GRASS_REBUILD = 8;
+static bool grassRefit = false, grassBuilt = false;
+static int grassFrames = 0;
+static uint32_t grassBuildCap = 0;
+static float grassBuildPos[3], grassBuildFwd[3];
 
 static VkDescriptorSetLayout setLayout;
 static VkDescriptorPool descPool, imguiPool;
@@ -332,6 +340,7 @@ struct Settings {
     float bloom = 0.04f, sharpen = 0.35f;
     int hdrMode = 0;                                // 0 SDR, 1 HDR10 (PQ), 2 scRGB
     float paperWhite = 203.f, peakNits = 1000.f;
+    bool grassRefit = true;                          // grass BLAS update in place between rebuilds
     bool fog = true, fogLights = true;               // volumetric fog / god rays (volfog.comp)
     int fogDiv = 2;                                  // fog resolution = render resolution / fogDiv (1..4)
     float fogDensity = 0.0007f, fogFalloff = 0.08f, fogAniso = 0.6f, fogNoise = 0.6f, fogDist = 150.f, fogBlend = 0.12f;
@@ -1176,7 +1185,8 @@ static void buildScene() {
         for (uint32_t k : pat) gidx.push_back(b * 7 + k);
     grassI = uploadBuf(gidx.data(), gidx.size() * 4, geomUsage);
     grassV = mkBuf((VkDeviceSize)maxBlades * 7 * 3 * 4, geomUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    bladeBuf = mkBuf((VkDeviceSize)maxBlades * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    bladeBuf = mkBuf((VkDeviceSize)maxBlades * 12,  // seed + cell xy per slot (grass.comp)
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     grassCounter = mkBuf(64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     countReadback = mkBuf(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -1409,7 +1419,8 @@ static void cmdBuildScene(VkCommandBuffer cb) {
     if (terrainDirty)
         cmdBuild(cb, terrainAS, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
                  &terrainGeom, terrainTris, false);
-    cmdBuild(cb, grassAS, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, grassFlags, &grassGeom, bladeCap * 5, false);
+    cmdBuild(cb, grassAS, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, grassFlags, &grassGeom, bladeCap * 5, grassRefit);
+    grassBuilt = true;
     memBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
                VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
     cmdBuild(cb, tlas, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, &tlasGeom, INST_MODELS + numModelInst + numRocks + numTrees + numPlants + numThrown + numSprayInst + numFallen, false);
@@ -2918,6 +2929,19 @@ static void updateFrameData() {
     u.grassA[0] = cs; u.grassA[1] = S.grassLength; u.grassA[2] = S.lodStart; u.grassA[3] = R;
     u.grassB[0] = tanf(std::min((hfov + m) / 2, 1.5f)); u.grassB[1] = tanf(std::min((vfov + m) / 2, 1.5f)); u.grassB[2] = S.keepRadius; u.grassB[3] = S.offscreenDensity;
     u.grassGrid[0] = (int)floorf((cam.pos.x - R) / cs); u.grassGrid[1] = (int)floorf((cam.pos.z - R) / cs);
+    {
+        V3 f = cam.fwd();
+        float dx = cam.pos.x - grassBuildPos[0], dy = cam.pos.y - grassBuildPos[1], dz = cam.pos.z - grassBuildPos[2];
+        bool moved = dx * dx + dy * dy + dz * dz > 1.f || f.x * grassBuildFwd[0] + f.y * grassBuildFwd[1] + f.z * grassBuildFwd[2] < 0.996f;  // 1 m, ~5 deg
+        grassRefit = S.grassRefit && grassBuilt && !moved && !terrainDirty && ++grassFrames < GRASS_REBUILD;
+        if (grassRefit) bladeCap = grassBuildCap;  // an update keeps the primitive count
+        else {
+            grassFrames = 0;
+            grassBuildCap = bladeCap;
+            grassBuildPos[0] = cam.pos.x; grassBuildPos[1] = cam.pos.y; grassBuildPos[2] = cam.pos.z;
+            grassBuildFwd[0] = f.x; grassBuildFwd[1] = f.y; grassBuildFwd[2] = f.z;
+        }
+    }
     u.grassGrid[2] = (int)grassGridN; u.grassGrid[3] = (int)bladeCap;
 
     // terrain grid recentred in 0.5 m steps
@@ -3537,12 +3561,18 @@ static void buildFrameGraph(uint32_t si, ImDrawData* dd) {
             computeBarrier(cb);
             dispatch(cb, P_WIND, 256 / 8, 256 / 8, {1, 0, 0, 0});  // B -> A: readers always see A
         }).write(windR, CS, RW);
+    bool refit = grassRefit;
     g.add("grass", GFX, [=](VkCommandBuffer cb) {
-        vkCmdFillBuffer(cb, grassCounter.b, 0, 4, 0);
-        memBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        bind(cb);
-        dispatch(cb, P_GRASS, (grassGridN + 7) / 8, (grassGridN + 7) / 8);
+        if (refit) {  // same blades, same slots: re-animate in place
+            bind(cb);
+            dispatch(cb, P_GRASS, (bladeCap + 63) / 64, 1, {1, 0, 0, 0});
+        } else {
+            vkCmdFillBuffer(cb, grassCounter.b, 0, 4, 0);
+            memBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+            bind(cb);
+            dispatch(cb, P_GRASS, (grassGridN + 7) / 8, (grassGridN + 7) / 8);
+        }
         computeBarrier(cb);
         dispatch(cb, P_GRASS_TAIL, (bladeCap + 63) / 64, 1);
     }).read(terrain, CS, R).read(windR, CS, R).write(grassCount, CS | XFER, RW | XW).write(grass, CS, WR);
@@ -5687,6 +5717,7 @@ static void drawUI() {
     }
     if (ImGui::CollapsingHeader("Wind")) {
         ImGui::Checkbox("Simulated wind map", &S.windMap);
+        ImGui::Checkbox("Refit grass BVH (rebuild every 8 frames / on camera move)", &S.grassRefit);
         ImGui::SetItemTooltip("Gust fronts from different directions sweep through; where they collide, pressure waves ripple the grass and water");
         ImGui::BeginDisabled(!S.windMap);
         ImGui::SliderFloat("Gust fronts", &S.gustStrength, 0, 1, "%.2fx");
@@ -5966,6 +5997,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-gi-probes")) S.giProbes = false;
         else if (!strcmp(argv[i], "--sun") && i + 2 < argc) { S.sunElev = (float)atof(argv[++i]); S.sunAzim = (float)atof(argv[++i]); }
         else if (!strcmp(argv[i], "--rain") && i + 1 < argc) { S.rain = (float)atof(argv[++i]); S.wetness = std::min(S.rain * 1.5f, 1.f); }
+        else if (!strcmp(argv[i], "--no-grass-refit")) S.grassRefit = false;
         else if (!strcmp(argv[i], "--fog-div") && i + 1 < argc) S.fogDiv = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--fog") && i + 1 < argc) { S.fogDensity = (float)atof(argv[++i]); S.fog = S.fogDensity > 0.f; }
         else if (!strcmp(argv[i], "--borderless")) windowMode = 1;
