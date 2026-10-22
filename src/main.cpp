@@ -974,7 +974,7 @@ static void initVulkan(bool validate) {
     }
     if (!dlss::init(instance, phys, dev)) upscaler = dlss::OFF;
     rg::QueueInfo qs[rg::QUEUE_COUNT] = {{queue, qfam}, {computeQueue, computeFam}};
-    graph.init(dev, qs, timestampPeriod);
+    graph.init(phys, dev, qs, timestampPeriod);
 }
 
 static Image mkImageUsage(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage, uint32_t mips = 1) {

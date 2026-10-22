@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <tracy/TracyVulkan.hpp>
+
 #define RG_CHECK(x)                                                                    \
     do {                                                                               \
         VkResult r_ = (x);                                                             \
@@ -26,7 +28,7 @@ constexpr VkAccessFlags2 WRITE_ACCESS = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS
                                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 }
 
-void Graph::init(VkDevice d, const QueueInfo q[QUEUE_COUNT], float period) {
+void Graph::init(VkPhysicalDevice phys, VkDevice d, const QueueInfo q[QUEUE_COUNT], float period) {
     dev = d;
     tsPeriod = period;
     for (int i = 0; i < QUEUE_COUNT; i++) {
@@ -46,9 +48,30 @@ void Graph::init(VkDevice d, const QueueInfo q[QUEUE_COUNT], float period) {
     qi.queryCount = MAX_PASSES * 2;
     RG_CHECK(vkCreateQueryPool(dev, &qi, nullptr, &queries));
     vkResetQueryPool(dev, queries, 0, MAX_PASSES * 2);
+#ifdef TRACY_ENABLE
+    for (int i = 0; i < QUEUE_COUNT; i++) {
+        if (i > 0 && q[i].queue == q[GFX].queue) break;  // no async queue: one context
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = pools[i];
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        VkCommandBuffer cb;
+        RG_CHECK(vkAllocateCommandBuffers(dev, &ai, &cb));
+        tracy::VkCtx* c = TracyVkContext(phys, dev, q[i].queue, cb);  // records + submits a calibration on cb
+        vkFreeCommandBuffers(dev, pools[i], 1, &cb);
+        TracyVkContextName(c, i == GFX ? "GFX" : "async compute", i == GFX ? 3 : 13);
+        tracyCtx[i] = c;
+    }
+#else
+    (void)phys;
+#endif
 }
 
 void Graph::destroy() {
+#ifdef TRACY_ENABLE
+    for (void* c : tracyCtx)
+        if (tracy::VkCtx* tc = (tracy::VkCtx*)c) TracyVkDestroy(tc);
+#endif
     for (int i = 0; i < QUEUE_COUNT; i++) {
         vkDestroyCommandPool(dev, pools[i], nullptr);
         vkDestroySemaphore(dev, timeline[i], nullptr);
@@ -130,6 +153,9 @@ void Graph::execute(const std::vector<VkCommandBuffer>& firstCbs, VkSemaphore ac
         b.q = q;
         b.cb = nextCb(q);
         b.signal = ++timelineValue[q];
+#ifdef TRACY_ENABLE
+        if (tracy::VkCtx* tc = (tracy::VkCtx*)tracyCtx[q]) TracyVkCollect(tc, b.cb);
+#endif
         batches.push_back(b);
         open[q] = (int)batches.size() - 1;
     };
@@ -193,7 +219,13 @@ void Graph::execute(const std::vector<VkCommandBuffer>& firstCbs, VkSemaphore ac
             l.pLabelName = p.name.c_str();
             labelBegin(cb, &l);
         }
-        p.record(cb);
+        {
+#ifdef TRACY_ENABLE
+            tracy::VkCtx* tc = (tracy::VkCtx*)tracyCtx[tracyCtx[p.q] ? p.q : GFX];
+            TracyVkZoneTransient(tc, tz, cb, p.name.c_str(), tc != nullptr);
+#endif
+            p.record(cb);
+        }
         if (labelEnd) labelEnd(cb);
         if (timed) {
             vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, queries, qi + 1);

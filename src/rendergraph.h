@@ -27,7 +27,8 @@ struct PassTiming { std::string name; Queue queue; float startMs, ms; };
 
 class Graph {
 public:
-    void init(VkDevice dev, const QueueInfo queues[QUEUE_COUNT], float timestampPeriodNs);
+    // phys: for the Tracy GPU contexts (one per queue; only with -DPTX_PROFILE=ON)
+    void init(VkPhysicalDevice phys, VkDevice dev, const QueueInfo queues[QUEUE_COUNT], float timestampPeriodNs);
     void destroy();
 
     // ---- per frame
@@ -74,6 +75,7 @@ private:
     VkQueryPool queries = VK_NULL_HANDLE;
     static constexpr uint32_t MAX_PASSES = 64;
     float tsPeriod = 1.f;
+    void* tracyCtx[QUEUE_COUNT] = {};  // tracy::VkCtx*, null without Tracy
 
     std::vector<std::string> resNames;
     std::vector<Pass> passes;
