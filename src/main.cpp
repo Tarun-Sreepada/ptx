@@ -5903,6 +5903,7 @@ static void drawUI() {
             ImGui::BeginDisabled(!A.reflections);
             ImGui::SliderInt("Reflection rays", &A.reflectionRays, 256, 4096);
             ImGui::SliderInt("Reflection bounces", &A.bounces, 1, 16);
+            ImGui::SliderFloat("Reflection updates", &A.reflectionHz, 2, 60, "%.0f Hz");
             ImGui::SliderFloat("Reverb gain", &A.reverbGain, 0, 3);
             ImGui::EndDisabled();
         } else {

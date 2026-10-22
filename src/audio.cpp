@@ -284,7 +284,12 @@ void simMain() {
         if (active) {
             PROF_ZONE("audio sim");
             iplSimulatorRunDirect(sim);
-            if (S.reflections) iplSimulatorRunReflections(sim);
+            // reverb changes slowly as the listener moves: a few updates a second sound the same as 60
+            static auto lastRefl = t0 - std::chrono::seconds(1);
+            if (S.reflections && std::chrono::duration<float>(t0 - lastRefl).count() >= 1.f / std::max(S.reflectionHz, 1.f)) {
+                iplSimulatorRunReflections(sim);
+                lastRefl = t0;
+            }
         }
         float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
         simMs.store(simMs.load() * 0.9f + ms * 0.1f);

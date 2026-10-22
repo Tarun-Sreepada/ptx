@@ -16,7 +16,8 @@ enum Material : uint8_t { MAT_GENERIC, MAT_CONCRETE, MAT_WOOD, MAT_GLASS, MAT_ME
 struct Settings {
     float masterGain = 1.f;
     bool occlusion = true, transmission = true, reflections = true;
-    int reflectionRays = 2048, bounces = 6;
+    int reflectionRays = 1024, bounces = 6;
+    float reflectionHz = 15.f;  // reflection IRs update rate (direct paths run every tick, ~60 Hz)
     float reverbGain = 1.f;
 };
 
