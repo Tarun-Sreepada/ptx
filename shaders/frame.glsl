@@ -78,6 +78,20 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 vtRect[14];      // per level: resident world xz rectangle (min xz, max xz)
     vec4 sssP;            // subsurface scattering (sss.glsl): x on, y max walk steps, z scattering distance scale, w snow
     vec4 wet2;            // surface_fx.comp: x water soaked into porous surfaces, y drips from cover, z rivulets
+    // sun / moon / night sky (night.glsl). sunDir / sunColor above are the key light: the sun, or the moon at night
+    vec4 sun2;            // xyz direction to the sun, w its irradiance scale (sky LUT)
+    vec4 moon0;           // xyz direction to the moon, w cos(angular radius)
+    vec4 moon1;           // x phase angle (rad, 0 = full), y illuminated fraction, z moonlight irradiance scale, w night light boost
+    vec4 night0;          // x stars, y Milky Way, z airglow, w cd/m^2 -> scene units (incl. the boost)
+    vec4 night1;          // x sky rotation (sun's angle about the pole), y latitude (rad), z twinkle, w key light is the moon
+    vec4 purk;            // x Purkinje shift on, y scene units -> cd/m^2 (without the boost), z night light boost
+    // lightning (lightning.glsl): segments [2i] = a xyz, width; [2i+1] = b xyz, brightness
+    vec4 bolt[96];
+    vec4 boltInfo;        // x segments, y flash (0..1, flickering), z sky flash radiance, w -
+    vec4 boltPos;         // xyz flash centre (cloud base above the strike), w -
+    vec4 rainbow;         // x strength, y droplet radius (mm), z rain-shaft distance (m), w on
+    vec4 fogBank;         // x density (1/m), y patch scale (m), z top height above the ground (m), w coverage 0..1
+    vec4 fogBank2;        // xy drift offset (m, carried by the wind), z wisp detail, w on
 } F;
 
 // Camera projection matching cameraRay(): reverse-Z (near plane 0.05 -> depth 1, infinity -> 0).

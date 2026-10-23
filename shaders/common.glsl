@@ -39,7 +39,7 @@ layout(binding = 27, std430) buffer GrassCounter {
     uint drawFirstInstance;
 };
 
-layout(binding = 28, rgba16f) uniform image2D skyLUT;       // atmosphere radiance per unit sun irradiance
+layout(binding = 28, rgba32f) uniform image2D skyLUT;       // atmosphere radiance (sun + moon light scattered), scene units
 layout(binding = 29, std430) readonly buffer RockV { float rv[]; }; // pos.xyz, normal.xyz
 layout(binding = 30, std430) readonly buffer RockI { uint ri[]; };
 layout(binding = 10, r32f) uniform image2D gDepth;        // hit distance along the camera ray (-1 = sky)
@@ -169,8 +169,11 @@ bool similarPrev(ivec2 q, vec3 P, vec3 n, uint mat) {
 
 #include "atmosphere.glsl"
 #include "probes.glsl"
+#include "night.glsl"
 
-// Sky radiance: physical atmosphere LUT (sky.comp) scaled by sun illuminance, plus a faint night sky.
+#include "lightning.glsl"
+
+// Sky radiance: physical atmosphere LUT (sky.comp: sun- and moonlight scattered), plus the night background.
 vec3 skyAtmo(vec3 d) {
     float el = asin(clamp(d.y, -1.0, 1.0));
     vec2 uv = vec2(atan(d.x, d.z) / (2.0 * PI) + 0.5, skyV(el));
@@ -182,7 +185,7 @@ vec3 skyAtmo(vec3 d) {
     vec3 c = mix(mix(imageLoad(skyLUT, a0).rgb, imageLoad(skyLUT, ivec2(a1.x, a0.y)).rgb, f.x),
                  mix(imageLoad(skyLUT, ivec2(a0.x, a1.y)).rgb, imageLoad(skyLUT, a1).rgb, f.x), f.y);
     float overcast = F.clouds.w > 0.5 ? 1.0 - 0.45 * F.clouds.x * F.clouds.x : 1.0;  // cloud cover greys out the blue sky
-    return c * F.params2.z * F.sunColor.w * overcast + vec3(0.002, 0.003, 0.008);
+    return c * F.sunColor.w * overcast + nightAmbient(d) * (F.clouds.w > 0.5 ? 1.0 - 0.8 * F.clouds.x : 1.0) + lightningSky(d);
 }
 // Far field: past the terrain mesh (F.terrainP extent, set by the view distance) a downward ray that missed
 // everything would see black. Instead march the large-scale terrain noise (the same function, coarse terms only)
@@ -261,10 +264,14 @@ vec3 skyWithSun(vec3 d) {
     float T;
     vec3 cl = cloudMarch(F.camPos.xyz, d, jit, T);
     vec3 c = sky(d) * T + cl;
+    // stars and the Milky Way behind everything (fade out under the day sky by themselves)
+    if (d.y > 0.0 && F.night0.w > 0.0) c += (starField(d, 2.0 * F.camUp.w / float(F.res.y)) + milkyWay(d)) * F.night0.w * T;
     // sun disc: ~500x the sky, so even thin cloud must kill it; scale by T^3 (optical depth x3) so a cloud edge
-    // reads as a bright glow rather than the bare disc on top of the cloud
-    if (dot(d, F.sunDir.xyz) > F.sunDir.w)
+    // reads as a bright glow rather than the bare disc on top of the cloud. At night the key light is the moon.
+    if (F.night1.w < 0.5 && dot(d, F.sunDir.xyz) > F.sunDir.w)
         c += min(F.sunColor.rgb / (2.0 * PI * (1.0 - F.sunDir.w)), vec3(500.0)) * T * T * T;
+    c += min(moonDisc(d), vec3(500.0)) * T * T * T;
+    c += lightningBolt(d, 1e9);
     return c;
 }
 

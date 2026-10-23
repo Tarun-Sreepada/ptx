@@ -1,5 +1,8 @@
 #include "audio.h"
 
+#include <array>
+#include <chrono>
+
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_ENCODING
 #define MA_NO_GENERATION
@@ -347,6 +350,129 @@ std::vector<float> synthWind() {
     return s;
 }
 
+// Thunder: a near strike starts with the tearing crack of the channel (broadband, sharp), then rolls; a distant one
+// is only the low roll (air absorbs the highs), arriving softly and swelling as sound from further along the
+// channel comes in.
+std::vector<float> synthThunder(uint32_t seed, bool near) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> U(-1.f, 1.f), U01(0.f, 1.f);
+    const float len = near ? 7.f : 9.f;
+    std::vector<float> s((size_t)(len * RATE));
+    float lp1 = 0, lp2 = 0, hp = 0, lpc = 0;
+    // swells: a few random bumps of rumble
+    float bt[6], ba[6], bw[6];
+    for (int k = 0; k < 6; k++) { bt[k] = (near ? 0.3f : 0.6f) + U01(rng) * (len * 0.55f); ba[k] = 0.4f + 0.6f * U01(rng); bw[k] = 0.3f + 0.8f * U01(rng); }
+    float fc = near ? 220.f : 110.f, a = 1.f - expf(-2.f * 3.14159265f * fc / RATE), ac = 1.f - expf(-2.f * 3.14159265f * 3000.f / RATE);
+    for (size_t i = 0; i < s.size(); i++) {
+        float t = (float)i / RATE, n = U(rng);
+        lp1 += (n - lp1) * a;
+        lp2 += (lp1 - lp2) * a;
+        float env = (1.f - expf(-t / (near ? 0.05f : 0.4f))) * expf(-t / (near ? 2.2f : 2.8f));
+        float sw = 0.35f;
+        for (int k = 0; k < 6; k++) sw += ba[k] * expf(-(t - bt[k]) * (t - bt[k]) / (bw[k] * bw[k]));
+        float v = lp2 * 6.f * env * sw;
+        if (near) {  // the crack: band-limited noise burst with sharp attack, a few ms of crackles after
+            lpc += (n - lpc) * ac;
+            hp = n - lpc;
+            float crack = expf(-t / 0.08f) * (t < 0.002f ? t / 0.002f : 1.f);
+            float rip = U01(rng) < 0.002f * expf(-t / 0.4f) ? 1.f : 0.f;
+            v += (lpc * 1.2f + hp * 0.4f) * crack + rip * U(rng) * 0.6f;
+        }
+        s[i] = std::clamp(v, -1.f, 1.f) * 0.8f;
+    }
+    return s;
+}
+
+// Impacts by modal synthesis: a few damped resonances of the struck body (frequency ratios and decay per material)
+// over a short noise burst for the contact itself.
+std::vector<float> synthImpact(uint32_t seed, int kind) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> U(-1.f, 1.f), U01(0.f, 1.f);
+    struct M { float f0, ratio[5], t60, noiseLen, noiseFc, body; };
+    static const M mats[4] = {
+        {1100.f, {1.f, 2.32f, 3.91f, 5.43f, 7.2f}, 0.06f, 0.012f, 4000.f, 0.0f},  // stone: sharp click, short ring
+        {380.f, {1.f, 2.74f, 5.1f, 7.6f, 0.f}, 0.07f, 0.02f, 1800.f, 0.4f},      // wood: hollow knock
+        {0.f, {0.f}, 0.0f, 0.12f, 500.f, 1.0f},                                    // dirt: dull thud, crumbling grit
+        {520.f, {1.f, 2.76f, 5.40f, 8.93f, 13.3f}, 1.1f, 0.006f, 6000.f, 0.f},    // metal: clang, long ring
+    };
+    const M& m = mats[kind];
+    float len = kind == 3 ? 1.8f : (kind == 2 ? 0.45f : 0.4f);
+    std::vector<float> s((size_t)(len * RATE));
+    float jit = 0.85f + 0.3f * U01(rng);
+    float amp[5], ph[5];
+    for (int k = 0; k < 5; k++) { amp[k] = (k == 0 ? 1.f : 0.6f / (k + 0.5f)) * (0.6f + 0.8f * U01(rng)); ph[k] = U01(rng) * 6.2832f; }
+    float lp = 0, lp2 = 0, a = 1.f - expf(-2.f * 3.14159265f * m.noiseFc / RATE);
+    for (size_t i = 0; i < s.size(); i++) {
+        float t = (float)i / RATE, v = 0.f;
+        if (m.f0 > 0.f)
+            for (int k = 0; k < 5; k++) {
+                if (m.ratio[k] <= 0.f) continue;
+                float f = m.f0 * jit * m.ratio[k];
+                float dec = m.t60 / (1.f + 0.6f * k) / 6.9f;  // higher modes die faster
+                v += amp[k] * sinf(6.2832f * f * t + ph[k]) * expf(-t / dec);
+            }
+        lp += (U(rng) - lp) * a;
+        lp2 += (lp - lp2) * a;
+        float nz = (kind == 2 ? lp2 * 3.f : lp) * expf(-t / m.noiseLen) * (t < 0.0015f ? t / 0.0015f : 1.f);
+        if (kind == 2 && U01(rng) < 0.004f * expf(-t / 0.15f)) nz += U(rng) * 0.4f;  // grit settling
+        float body = m.body * sinf(6.2832f * (70.f + 60.f * expf(-t / 0.02f)) * t) * expf(-t / 0.06f);
+        s[i] = std::clamp((v * 0.5f + nz * 1.4f + body) * 0.6f, -1.f, 1.f);
+    }
+    return s;
+}
+
+// Water: the plop (cavity collapse ringing a bubble: a fast upward chirp) over a broadband splash of droplets.
+std::vector<float> synthSplash(uint32_t seed, bool big) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> U(-1.f, 1.f), U01(0.f, 1.f);
+    float len = big ? 1.4f : 0.5f;
+    std::vector<float> s((size_t)(len * RATE));
+    float lp = 0, hp = 0, a = 1.f - expf(-2.f * 3.14159265f * 2500.f / RATE);
+    int nb = big ? 14 : 4;
+    std::vector<float> bt(nb), bf(nb);
+    for (int k = 0; k < nb; k++) { bt[k] = U01(rng) * len * 0.5f + (k == 0 ? 0.f : 0.03f); bf[k] = 400.f + 1600.f * U01(rng) * (big ? 0.7f : 1.f); }
+    for (size_t i = 0; i < s.size(); i++) {
+        float t = (float)i / RATE, n = U(rng);
+        lp += (n - lp) * a;
+        hp = n - lp;
+        float env = expf(-t / (big ? 0.35f : 0.12f)) * (t < 0.003f ? t / 0.003f : 1.f);
+        float v = (lp * 0.8f + hp * 0.5f) * env;
+        for (int k = 0; k < nb; k++) {
+            float u = t - bt[k];
+            if (u < 0.f || u > 0.08f) continue;
+            float f = bf[k] * (1.f + 8.f * u);  // bubble resonance rising as it collapses
+            v += 0.35f * sinf(6.2832f * f * u) * expf(-u / 0.018f);
+        }
+        s[i] = std::clamp(v, -1.f, 1.f) * 0.7f;
+    }
+    return s;
+}
+
+// Fire: the roar of burning gas (low noise, flickering) with the pops and crackles of sap and splitting wood.
+std::vector<float> synthFire() {
+    const size_t n = 6 * RATE;
+    std::mt19937 rng(23);
+    std::uniform_real_distribution<float> U(-1.f, 1.f), U01(0.f, 1.f);
+    std::vector<float> s(n);
+    float lp1 = 0, lp2 = 0, a = 1.f - expf(-2.f * 3.14159265f * 300.f / RATE), fl = 0.5f;
+    float pop = 0.f, popF = 0.f, popT = 0.f;
+    for (size_t i = 0; i < n; i++) {
+        float t = (float)i / RATE;
+        lp1 += (U(rng) - lp1) * a;
+        lp2 += (lp1 - lp2) * a;
+        fl += (U01(rng) - fl) * 0.0005f;
+        float v = lp2 * 3.f * (0.6f + 0.8f * fl);
+        if (U01(rng) < 0.0006f) { pop = 0.3f + 0.7f * U01(rng); popF = 1500.f + 4000.f * U01(rng); popT = t; }
+        float u = t - popT;
+        v += pop * U(rng) * expf(-u / 0.004f) + pop * 0.3f * sinf(6.2832f * popF * u) * expf(-u / 0.01f);
+        s[i] = std::clamp(v, -1.f, 1.f) * 0.7f;
+    }
+    const size_t xf = RATE / 2;
+    for (size_t i = 0; i < xf; i++) { float k = (float)i / xf; s[i] = s[i] * k + s[n - xf + i] * (1.f - k); }
+    s.resize(n - xf);
+    return s;
+}
+
 void allocBuf(int ch, IPLAudioBuffer& b) { iplAudioBufferAllocate(ctx, ch, FRAME, &b); }
 }  // namespace
 
@@ -402,6 +528,13 @@ bool init() {
     sounds[SND_LAND].s = synthFootstep(99, 1200.f, 1.2f, 0.35f);
     sounds[SND_HUM].s = synthHum();
     sounds[SND_WIND].s = synthWind();
+    sounds[SND_THUNDER_NEAR].s = synthThunder(5, true);
+    sounds[SND_THUNDER_FAR].s = synthThunder(9, false);
+    for (int k = 0; k < 4; k++)
+        for (int v = 0; v < 3; v++) sounds[SND_IMPACT_STONE + k * 3 + v].s = synthImpact(100 + k * 17 + v * 5, k);
+    sounds[SND_SPLASH].s = synthSplash(41, false);
+    sounds[SND_SPLASH + 1].s = synthSplash(43, true);
+    sounds[SND_FIRE].s = synthFire();
 
     simThread = std::thread(simMain);
 
@@ -606,6 +739,28 @@ bool emitterAlive(uint32_t i) {
     return (s == PENDING || s == LIVE) && !emitters[i].stop.load();
 }
 void setAmbience(float g) { windGain = g; }
+
+void impact(int kind, const float pos[3], float E, float size) {
+    if (E < 0.5f) return;
+    // a body rattling on the ground fires contact after contact: one sound per spot per 80 ms
+    static std::vector<std::array<float, 4>> recent;  // x, y, z, time
+    static auto t0 = std::chrono::steady_clock::now();
+    float now = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
+    std::erase_if(recent, [&](const std::array<float, 4>& r) { return now - r[3] > 0.08f; });
+    for (auto& r : recent) {
+        float dx = r[0] - pos[0], dy = r[1] - pos[1], dz = r[2] - pos[2];
+        if (dx * dx + dy * dy + dz * dz < 0.25f) return;
+    }
+    recent.push_back({pos[0], pos[1], pos[2], now});
+    kind = std::clamp(kind, 0, 3);
+    static uint32_t rot = 0;
+    uint32_t snd = SND_IMPACT_STONE + kind * 3 + (rot++ % 3);
+    // loudness ~ sqrt of the energy (sound power ~ a small fraction of the impact energy), ~1 at 200 J
+    float gain = std::clamp(sqrtf(E / 200.f), 0.04f, 2.5f);
+    // bigger bodies ring lower (modal frequencies ~ 1 / size), within a musical-ish range
+    float pitch = std::clamp(powf(0.25f / std::max(size, 0.02f), 0.5f), 0.45f, 2.2f);
+    emitterPlay(snd, pos, gain, false, pitch);
+}
 
 Stats stats() {
     Stats s{};

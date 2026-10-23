@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-// Bakes the sky-view LUT (lat-long, horizon-weighted) for the current sun direction.
+// Bakes the sky-view LUT (lat-long, horizon-weighted) for the current sun and moon.
 layout(local_size_x = 8, local_size_y = 8) in;
 
 void main() {
@@ -11,5 +11,8 @@ void main() {
     float phi = ((float(p.x) + 0.5) / float(SKY_W) - 0.5) * 2.0 * PI;
     float el = skyEl((float(p.y) + 0.5) / float(SKY_H));
     vec3 d = vec3(cos(el) * sin(phi), sin(el), cos(el) * cos(phi));
-    imageStore(skyLUT, p, vec4(atmosphere(d, F.sunDir.xyz), 1));
+    // sunlight and moonlight scattered by the same atmosphere (twilight under a moonlit sky works out by itself)
+    vec3 L = atmosphere(d, F.sun2.xyz) * F.sun2.w;
+    if (F.moon1.z > 0.0 && F.moon0.y > -0.3) L += atmosphere(d, F.moon0.xyz) * F.moon1.z;
+    imageStore(skyLUT, p, vec4(L, 1));
 }

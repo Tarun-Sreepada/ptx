@@ -36,7 +36,18 @@ void setTerrain(const float* verts, uint32_t nverts, const uint32_t* idx, uint32
 // ---- listener / sounds / emitters
 void setListener(const float pos[3], const float fwd[3], const float up[3]);
 uint32_t soundLoad(const char* path);  // any format miniaudio decodes; mono-mixed, resampled
-enum BuiltinSound : uint32_t { SND_FOOTSTEP0, SND_FOOTSTEP1, SND_FOOTSTEP2, SND_FOOTSTEP3, SND_LAND, SND_HUM, SND_WIND, SND_BUILTIN_COUNT };
+enum BuiltinSound : uint32_t {
+    SND_FOOTSTEP0, SND_FOOTSTEP1, SND_FOOTSTEP2, SND_FOOTSTEP3, SND_LAND, SND_HUM, SND_WIND,
+    SND_THUNDER_NEAR, SND_THUNDER_FAR,                       // a close crack + rumble, a distant low roll
+    SND_IMPACT_STONE, SND_IMPACT_WOOD = SND_IMPACT_STONE + 3, // impacts: 3 variants each (modal synthesis), pitch by size
+    SND_IMPACT_DIRT = SND_IMPACT_WOOD + 3, SND_IMPACT_METAL = SND_IMPACT_DIRT + 3,
+    SND_SPLASH = SND_IMPACT_METAL + 3,                        // 2 variants: small plop, big splash
+    SND_FIRE = SND_SPLASH + 2,                                // crackling fire (loop)
+    SND_BUILTIN_COUNT
+};
+// Impact sound for a collision: material kind (0 stone, 1 wood, 2 dirt, 3 metal), kinetic energy dissipated (J) and
+// the body's size (m): louder with energy (~ sqrt), lower pitched for bigger bodies. Rate-limited per position.
+void impact(int kind, const float pos[3], float energyJ, float size);
 uint32_t emitterPlay(uint32_t sound, const float pos[3], float gain, bool loop, float pitch = 1.f);  // UINT32_MAX if none free
 void emitterSetPos(uint32_t e, const float pos[3]);
 void emitterSetGain(uint32_t e, float gain);

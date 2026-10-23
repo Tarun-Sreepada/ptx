@@ -401,6 +401,18 @@ struct Settings {
     bool sss = true, snowSSS = true, microShadow = true;
     int sssSteps = 24;
     float sssScale = 1.f;
+    // night sky (night.glsl): moon phase (0 new, 0.5 full), observer latitude, how much brighter than physical the
+    // moon / stars / airglow light the scene (eyes adapt further than a display can show), sky features
+    float moonPhase = 0.5f, latitude = 45.f, nightBoost = 100.f;
+    float stars = 1.f, milkyWay = 1.f, airglow = 1.f, twinkle = 1.f;
+    bool purkinje = true;
+    // lightning (lightning.glsl): strikes in thunderstorms (rain under cumulonimbus), thunder delayed by distance
+    bool lightning = true;
+    float strikesPerMin = 3.f;
+    // rainbow in rain with the sun behind the viewer; fog banks drifting with the wind (volfog.comp)
+    float rainbow = 1.f, dropMM = 1.f;
+    bool fogBanks = false;
+    float bankDensity = 0.03f, bankScale = 220.f, bankTop = 30.f, bankCover = 0.45f, bankDetail = 1.f;
 };
 static Settings S;
 
@@ -463,6 +475,11 @@ struct UBO {
     float vtRect[14][4];                    // per level: resident world xz rectangle
     float sssP[4];                          // subsurface: on, max walk steps, distance scale, snow
     float wet2[4];                          // soaked-in water, drips from cover, rivulets
+    float sun2[4], moon0[4], moon1[4], night0[4], night1[4], purk[4];  // night.glsl
+    float bolt[96][4];                      // lightning.glsl segments
+    float boltInfo[4], boltPos[4];
+    float rainbow[4];                       // composite.comp
+    float fogBank[4], fogBank2[4];          // volfog.comp
 };
 
 struct Camera {
@@ -1391,7 +1408,7 @@ static void buildScene() {
                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // sky-view LUT
-    skyImg = mkImage(SKY_W, SKY_H, VK_FORMAT_R16G16B16A16_SFLOAT);
+    skyImg = mkImage(SKY_W, SKY_H, VK_FORMAT_R32G32B32A32_SFLOAT);
     oneShot([](VkCommandBuffer cb) {
         imgBarrier(cb, skyImg.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
@@ -3301,6 +3318,72 @@ static void destroyScreenResources() {
     freeImage(depthImg);
 }
 
+
+// ---------------------------------------------------------------- lightning (lightning.glsl)
+// Strikes in thunderstorms: Poisson in time (rain under cumulonimbus), at 150 m .. 6 km. The channel is a jagged
+// polyline from the cloud base to the ground with a few side branches; 3-4 return strokes flicker over ~0.5 s.
+// Thunder is played after distance / 343 m/s.
+struct Bolt { std::vector<std::array<float, 8>> seg; V3 ground, top; double t0 = -1e9; float strokes[4]; int nStrokes = 0; bool thunder = false; float dist = 0; };
+static Bolt bolt;
+static bool boltRequest = false;
+static void newBolt() {
+    std::mt19937 rng((uint32_t)(simTime * 1000.0) ^ 0x9e3779b9u);
+    std::uniform_real_distribution<float> U(0.f, 1.f);
+    float d = 150.f + 5850.f * U(rng) * U(rng), a = U(rng) * 6.2832f;
+    V3 g{cam.pos.x + cosf(a) * d, 0.f, cam.pos.z + sinf(a) * d};
+    g.y = heightFn(g.x, g.z);
+    V3 top{g.x + (U(rng) - 0.5f) * 400.f, std::max(S.cloudBase, g.y + 300.f), g.z + (U(rng) - 0.5f) * 400.f};
+    bolt = Bolt{};
+    bolt.ground = g; bolt.top = top; bolt.t0 = simTime; bolt.dist = d;
+    auto channel = [&](V3 p0, V3 p1, int n, float w, float br) {
+        V3 prev = p0;
+        float len = sqrtf(dot(p1 - p0, p1 - p0)) / n;
+        for (int i = 1; i <= n && bolt.seg.size() < 48; i++) {
+            V3 q = p0 + (p1 - p0) * ((float)i / n);
+            if (i < n) q = q + V3{U(rng) - 0.5f, (U(rng) - 0.5f) * 0.3f, U(rng) - 0.5f} * (len * 0.9f);
+            bolt.seg.push_back({prev.x, prev.y, prev.z, w, q.x, q.y, q.z, br});
+            prev = q;
+        }
+    };
+    channel(top, g, 28, 0.6f, 1.f);
+    for (int b = 0; b < 4 && bolt.seg.size() < 44; b++) {
+        auto& sg = bolt.seg[(size_t)(U(rng) * 20.f)];
+        V3 s0{sg[0], sg[1], sg[2]};
+        V3 e = s0 + V3{(U(rng) - 0.5f) * 500.f, -(100.f + 300.f * U(rng)), (U(rng) - 0.5f) * 500.f};
+        channel(s0, e, 5, 0.25f, 0.35f);
+    }
+    bolt.nStrokes = 2 + (int)(U(rng) * 3.f);
+    for (int k = 0; k < bolt.nStrokes; k++) bolt.strokes[k] = k == 0 ? 0.f : bolt.strokes[k - 1] + 0.04f + 0.12f * U(rng);
+}
+static float boltFlash() {
+    float t = (float)(simTime - bolt.t0), f = 0.f;
+    for (int k = 0; k < bolt.nStrokes; k++) if (t >= bolt.strokes[k]) f += expf(-(t - bolt.strokes[k]) / 0.035f);
+    return t < 2.f ? std::min(f, 1.5f) : 0.f;
+}
+static void updateLightning(float dt) {
+    float storm = S.clouds ? S.cloudCoverage * S.cumulonimbus : 0.f;
+    std::uniform_real_distribution<float> U(0.f, 1.f);
+    static std::mt19937 rng(77);
+    float rate = S.lightning ? S.strikesPerMin / 60.f * std::clamp((S.rain - 0.3f) / 0.5f, 0.f, 1.f) * std::min(storm * 3.f, 1.f) : 0.f;
+    if (boltRequest || (rate > 0.f && U(rng) < rate * dt && simTime - bolt.t0 > 2.0)) { newBolt(); boltRequest = false; }
+    if (!bolt.thunder && bolt.t0 > -1e8 && simTime - bolt.t0 > bolt.dist / 343.f) {
+        bolt.thunder = true;
+        V3 dir = normalize(bolt.ground - cam.pos);
+        V3 at = cam.pos + dir * 40.f;  // our own distance law (the spatializer would drown km-far sources)
+        float gain = std::clamp(600.f / bolt.dist, 0.08f, 2.f);
+        audio::emitterPlay(bolt.dist < 900.f ? audio::SND_THUNDER_NEAR : audio::SND_THUNDER_FAR, &at.x, gain, false, 0.9f + 0.2f * U(rng));
+    }
+}
+static void writeLightning(UBO& u) {
+    float f = boltFlash();
+    u.boltInfo[0] = f > 0.f ? (float)bolt.seg.size() : 0.f;
+    u.boltInfo[1] = f;
+    u.boltInfo[2] = 0.4f;
+    for (size_t i = 0; i < bolt.seg.size() && f > 0.f; i++) { memcpy(u.bolt[2 * i], &bolt.seg[i][0], 16); memcpy(u.bolt[2 * i + 1], &bolt.seg[i][4], 16); }
+    V3 c = bolt.ground * 0.5f + bolt.top * 0.5f;
+    set4(u.boltPos, c, 0.f);
+}
+
 // ---------------------------------------------------------------- per-frame
 static uint32_t flags() {
     return (S.restir ? 1u : 0u) | (S.restirTemporal ? 2u : 0u) | (S.restirSpatial ? 4u : 0u) | (S.accumulate ? 8u : 0u) |
@@ -3311,6 +3394,29 @@ static uint32_t flags() {
 static V3 sunDirection() {
     float el = S.sunElev * 3.14159265f / 180.f, az = S.sunAzim * 3.14159265f / 180.f;
     return {cosf(el) * sinf(az), sinf(el), cosf(el) * cosf(az)};
+}
+// Rotation of v about unit axis k by angle a (Rodrigues).
+static V3 rotateAbout(V3 v, V3 k, float a) {
+    float c = cosf(a), s = sinf(a);
+    return v * c + cross(k, v) * s + k * (dot(k, v) * (1.f - c));
+}
+// The sky turns about the celestial pole, which leans north (-z) at the latitude (night.glsl celestialPole).
+static V3 celestialPole() { float l = S.latitude * 3.14159265f / 180.f; return {0.f, sinf(l), -cosf(l)}; }
+// The moon sits where the sun was (phase x 1 day) earlier in its daily turn: rotated eastward about the pole by the
+// elongation (0 new, 180 deg full: opposite the sun).
+static V3 moonDirection() { return normalize(rotateAbout(sunDirection(), celestialPole(), S.moonPhase * 2.f * 3.14159265f)); }
+// Moonlight at full moon is ~2.2e-6 of sunlight (0.25 lux / 110 klux); fainter away from full by the lunar phase
+// law (Allen: magnitude + 0.026 |a| + 4e-9 a^4, a = phase angle in degrees).
+static float moonlightScale() {
+    float a = fabsf(S.moonPhase - 0.5f) * 360.f;
+    return 2.2e-6f * powf(10.f, -0.4f * (0.026f * a + 4e-9f * a * a * a * a));
+}
+static bool keyIsMoon() {
+    V3 sd = sunDirection(), md = moonDirection();
+    auto lum = [](V3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
+    float sunL = lum(sunTransmittance(sd)) * S.sunIntensity;
+    float moonL = lum(sunTransmittance(md)) * S.sunIntensity * moonlightScale() * S.nightBoost;
+    return md.y > 0.f && moonL > sunL;
 }
 
 // Emissive triangles of the placed models (not in switched-off buildings) + the active point
@@ -3461,9 +3567,31 @@ static void updateFrameData() {
     camVecs(prevCam, u.prevCamPos, u.prevRight, u.prevUp, u.prevFwd, 0);
 
     // sun and sky share one physical model: sky LUT is per unit sun irradiance, sun colour = irradiance * transmittance
-    V3 sd = sunDirection();
-    set4(u.sunDir, sd, cosf(S.sunRadiusDeg * 3.14159265f / 180.f));
-    set4(u.sunColor, sunTransmittance(sd) * S.sunIntensity, S.skyIntensity);
+    // key light: the sun, or the moon once it lights the ground more (night); both light the sky LUT
+    V3 sd = sunDirection(), md = moonDirection();
+    bool moonKey = keyIsMoon();
+    float moonI = S.sunIntensity * moonlightScale() * S.nightBoost;
+    if (moonKey) {
+        set4(u.sunDir, md, cosf(0.26f * 3.14159265f / 180.f));
+        V3 mc = sunTransmittance(md) * moonI;
+        set4(u.sunColor, V3{mc.x, mc.y * 0.96f, mc.z * 0.9f}, S.skyIntensity);  // lunar regolith reddens a little
+    } else {
+        set4(u.sunDir, sd, cosf(S.sunRadiusDeg * 3.14159265f / 180.f));
+        set4(u.sunColor, sunTransmittance(sd) * S.sunIntensity, S.skyIntensity);
+    }
+    set4(u.sun2, sd, S.sunIntensity);
+    set4(u.moon0, md, cosf(0.26f * 3.14159265f / 180.f));
+    {
+        float elong = S.moonPhase * 2.f * 3.14159265f;
+        set4(u.moon1, V3{fabsf(S.moonPhase - 0.5f) * 2.f * 3.14159265f, 0.5f * (1.f - cosf(elong)), moonI}, S.nightBoost);
+        set4(u.night0, V3{S.stars, S.milkyWay, S.airglow}, S.nightBoost / S.sceneLum);
+        // the sky turns with the sun: its angle about the pole in the equatorial frame (south = 0, east +)
+        V3 P = celestialPole(), e1 = normalize(V3{0.f, cosf(S.latitude * 3.14159265f / 180.f), sinf(S.latitude * 3.14159265f / 180.f)}), e2 = cross(P, e1);
+        set4(u.night1, V3{atan2f(dot(sd, e2), dot(sd, e1)), S.latitude * 3.14159265f / 180.f, S.twinkle}, moonKey ? 1.f : 0.f);
+        // Purkinje: scene units -> physical cd/m^2; at night the scene is lit S.nightBoost x brighter than physical
+        float boost = (moonKey || sd.y < 0.f) ? S.nightBoost : 1.f;
+        set4(u.purk, V3{S.purkinje ? 1.f : 0.f, S.sceneLum / boost, S.nightBoost}, 0.f);
+    }
     float wd = S.windDirDeg * 3.14159265f / 180.f;
     u.wind[0] = cosf(wd); u.wind[1] = sinf(wd); u.wind[2] = S.windStrength; u.wind[3] = S.windSpeed;
     u.params[0] = S.exposure; u.params[1] = (float)S.historyMax; u.params[2] = S.fireflyClamp; u.params[3] = S.spatialRadius;
@@ -3585,6 +3713,18 @@ static void updateFrameData() {
         }
         u.weather[0] = S.wetness; u.weather[1] = S.rain; u.weather[2] = S.puddles; u.weather[3] = S.caustics;
         u.wet2[0] = S.soak; u.wet2[1] = S.drip; u.wet2[2] = S.rivulets; u.wet2[3] = 0.f;
+        writeLightning(u);
+        set4(u.rainbow, V3{S.rainbow * std::min(S.rain * 2.f, 1.f), S.dropMM * 0.5f, 400.f}, S.rainbow > 0.f && S.rain > 0.f ? 1.f : 0.f);
+        {   // fog banks drift with the wind (and slowly change shape)
+            static double lastBankT = simTime;
+            static float drift[2] = {0.f, 0.f};
+            float bdt = std::clamp((float)(simTime - lastBankT), 0.f, 0.25f);
+            lastBankT = simTime;
+            float wd = S.windDirDeg * 3.14159265f / 180.f, ws = S.windStrength * S.windSpeed * 2.5f;  // ~1-4 m/s near the ground
+            drift[0] -= cosf(wd) * ws * bdt; drift[1] -= sinf(wd) * ws * bdt;
+            set4(u.fogBank, V3{S.bankDensity, S.bankScale, S.bankTop}, S.bankCover);
+            set4(u.fogBank2, V3{drift[0], drift[1], S.bankDetail}, S.fogBanks ? 1.f : 0.f);
+        }
         // world map + simulation
         for (int i = 0; i < 8; i++) {
             const std::string& nm = worldmap::paletteName(i);
@@ -7294,6 +7434,20 @@ static void drawUI() {
         ImGui::SliderFloat("Rivulets on walls", &S.rivulets, 0.f, 1.f, "%.2f");
         ImGui::SliderFloat("Puddles", &S.puddles, 0.f, 1.f, "%.2f");
     }
+    if (ImGui::CollapsingHeader("Night sky & lightning")) {
+        ImGui::SliderFloat("Moon phase", &S.moonPhase, 0.f, 1.f, "%.2f (0.5 full)");
+        ImGui::SliderFloat("Latitude", &S.latitude, -80.f, 80.f, "%.0f deg");
+        ImGui::SliderFloat("Night light boost", &S.nightBoost, 1.f, 1000.f, "%.0fx", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Stars", &S.stars, 0.f, 3.f); ImGui::SliderFloat("Milky Way", &S.milkyWay, 0.f, 3.f);
+        ImGui::SliderFloat("Airglow", &S.airglow, 0.f, 3.f); ImGui::SliderFloat("Twinkle", &S.twinkle, 0.f, 2.f);
+        ImGui::Checkbox("Purkinje shift", &S.purkinje);
+        ImGui::Checkbox("Lightning in storms", &S.lightning);
+        ImGui::SliderFloat("Strikes / min", &S.strikesPerMin, 0.f, 30.f);
+        if (ImGui::Button("Strike now")) boltRequest = true;
+        ImGui::SliderFloat("Rainbow", &S.rainbow, 0.f, 2.f);
+        ImGui::Checkbox("Fog banks", &S.fogBanks);
+        ImGui::SliderFloat("Bank density", &S.bankDensity, 0.f, 0.2f); ImGui::SliderFloat("Bank coverage", &S.bankCover, 0.f, 1.f);
+    }
     if (ImGui::CollapsingHeader("Impact marks & dust")) {
         ImGui::Checkbox("Decals (cracks, soil splatter, wood scars)", &S.decals);
         ImGui::Text("%zu decals, %zu dust clouds", decalList.size(), dustList.size());
@@ -7945,6 +8099,7 @@ int main(int argc, char** argv) {
             PROF_ZONE("physics");
             { PROF_ZONE("thrown + water forces"); updateThrown(dt); }
             { PROF_ZONE("spray"); updateSpray(std::min(dt, 0.05f)); }
+            updateLightning(std::min(dt, 0.1f));
             { PROF_ZONE("crater water"); updateRiverSwell(std::min(dt, 0.1f)); updateCraterWater(std::min(dt, 0.1f)); }
             { PROF_ZONE("characters: animate"); character::preStep(std::min(dt, 0.1f)); }
             { PROF_ZONE("physics step (Jolt)"); physics::step(std::min(dt, 1.f / 30.f)); }
