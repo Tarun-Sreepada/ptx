@@ -2,14 +2,16 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-// Surface effects on the G-buffer, before any lighting: impact decals, then rain (wet surfaces darken and turn
-// glossy where the sky can reach them, puddles collect on flat ground, raindrop ripples ring across them).
+// Surface effects on the G-buffer, before any lighting: impact decals, then rain (porous surfaces soak up water and
+// darken, a film makes them glossy where the sky can reach them, rivulets run down walls, puddles collect on flat
+// ground with raindrop ripples, and under trees / eaves drips keep falling for a while after the rain).
 layout(local_size_x = 8, local_size_y = 8) in;
 
 float h21(vec2 p) { return float(hashu(uint(int(p.x) * 7919 + int(p.y) * 104729 + 13))) / 4294967295.0; }
 
 // Raindrop ripples: expanding rings in a jittered grid, each cell restarting at its own phase. xy = normal slope.
-vec2 ripples(vec2 xz, float t) {
+// rate 0..1: share of the cells with a drop in this cycle (light rain / drips: sparse rings).
+vec2 ripples(vec2 xz, float t, float rate) {
     vec2 g = vec2(0);
     for (int layer = 0; layer < 2; layer++) {
         vec2 q = xz * (layer == 0 ? 3.0 : 4.3) + float(layer) * 17.3;
@@ -18,6 +20,7 @@ vec2 ripples(vec2 xz, float t) {
             for (int dx = -1; dx <= 1; dx++) {
                 vec2 c = cell + vec2(dx, dy);
                 float r0 = h21(c), r1 = h21(c + 31.7), r2 = h21(c + 57.1);
+                if (h21(c + vec2(floor(t * 1.3 + r2), 91.3)) > rate * 1.5) continue;  // no drop in this cell this time
                 vec2 ctr = c + vec2(r0, r1);
                 float ph = fract(t * 1.3 + r2);  // ring age, 0..1 (~0.77 s per drop)
                 vec2 dv = q - ctr;
@@ -35,7 +38,7 @@ void main() {
     if (!inScreen(p)) return;
     vec4 P = loadPos(p);
     if (P.w < 0.0) return;
-    bool decals = F.lightInfo.w > 0u, wetOn = F.weather.x > 0.0;
+    bool decals = F.lightInfo.w > 0u, wetOn = F.weather.x > 0.0 || F.wet2.x > 0.0 || F.wet2.y > 0.0;
     if (!decals && !wetOn) return;
     Surf sf = loadSurf(p);
     vec3 n = sf.n, x = P.xyz;
@@ -82,28 +85,65 @@ void main() {
         changed = true;
     }
 
-    // ---------------------------------------------------------------- rain: wetness, puddles, ripples
+    // ---------------------------------------------------------------- rain: wetness, puddles, ripples, drips
+    // F.weather.x = surface water film (fills fast in rain, runs off fast), F.wet2.x = water soaked into porous
+    // material (darkens; dries slowly, patchily, cavities last), F.wet2.y = water still dripping from canopies and
+    // eaves after rain, F.wet2.z = rivulets on steep faces.
     if (wetOn && sf.metal < 0.5 && sf.trans < 0.5) {
-        float wet = F.weather.x;
-        // only what the rain can reach: a ray straight up must escape (skipped for faces pointing down)
-        if (n.y < -0.3 || !visible(x + n * 0.02, vec3(0, 1, 0), 60.0)) wet *= 0.15;
-        float porous = mat == MAT_TERRAIN ? 1.0 : (mat == MAT_ROCK ? 0.8 : (mat == MAT_GRASS ? 0.3 : 0.6));
-        // darker (water fills the pores: less scattering) and glossy (a water film over the surface)
-        sf.base = mix(sf.base, sf.base * sf.base * 1.6, wet * porous * 0.8);
-        sf.base *= 1.0 - 0.25 * wet * porous;
-        sf.rough = mix(sf.rough, max(sf.rough * 0.25, 0.06), wet);
-        sf.spec = mix(sf.spec, 1.0, wet);
+        float film = F.weather.x, soak = F.wet2.x, drip = F.wet2.y;
+        // porous: soil, rock, rough building materials (brick, concrete, plaster, wood); smooth / waxy ones bead
+        float porous = mat == MAT_TERRAIN ? 1.0 : (mat == MAT_ROCK ? 0.7 : (mat == MAT_GRASS ? 0.15 : smoothstep(0.35, 0.85, sf.rough) * 0.9));
+        // only what the rain can reach: a ray straight up must escape (skipped for faces pointing down). Under
+        // cover, drips from the canopy / eaves above wet spots and lines instead.
+        bool exposed = n.y >= -0.3 && visible(x + n * 0.02, vec3(0, 1, 0), 60.0);
+        float dryPat = vnoise(x.xz * 1.7 + x.y * 0.9) * 0.6 + vnoise(x.xz * 7.0 - x.y * 3.0) * 0.4;  // where it dries first
+        if (!exposed) {
+            float spots = smoothstep(0.55, 0.75, vnoise(x.xz * 9.0 + 3.0) * 0.6 + vnoise(x.xz * 2.3) * 0.4);
+            float under = n.y > 0.5 ? drip * spots : 0.0;
+            film = max(film * 0.1, under * 0.8);
+            soak = max(soak * 0.15, under);
+        }
+        // drying: high, exposed, open spots first; cavities (low ao) and the patches dryPat marks hold water longer
+        float hold = dryPat * 0.5 + (1.0 - sf.ao) * 0.6;
+        float wetDark = smoothstep(hold - 0.25, hold + 0.15, soak * 1.2) * porous;
+        // darker (water fills the pores: less scattering at the surface), and a film once the pores are full
+        sf.base = mix(sf.base, sf.base * sf.base * 1.6, wetDark * 0.8);
+        sf.base *= 1.0 - 0.25 * wetDark;
+        float filmK = film * mix(1.0, smoothstep(0.5, 0.9, soak), porous);
+        sf.rough = mix(sf.rough, max(sf.rough * 0.25, 0.06), filmK);
+        sf.spec = mix(sf.spec, 1.0, filmK);
+        // rivulets: on steep faces water gathers into streaks running down (darker, glossy, moving bumps)
+        if (F.wet2.z > 0.0 && abs(n.y) < 0.7 && exposed && film > 0.05) {
+            vec3 hz = normalize(cross(vec3(0, 1, 0), n) + vec3(1e-4, 0, 0));
+            float u = dot(x, hz) * 14.0;
+            float col = floor(u), fu = fract(u);
+            float r0 = h21(vec2(col, 7.0)), r1 = h21(vec2(col, 19.0));
+            float lane = 1.0 - smoothstep(0.05, 0.16 + 0.1 * r1, abs(fu - 0.3 - 0.4 * r0 - 0.08 * sin(x.y * 9.0 + r1 * 6.0)));
+            float flow = x.y * 2.2 + F.camPos.w * (1.2 + r1) + r0 * 10.0;
+            float drop = smoothstep(0.75, 1.0, fract(flow)) * lane;
+            float k = lane * step(0.45, r0 + 0.5 * F.wet2.z - 0.25) * min(film * 2.0, 1.0) * F.wet2.z;
+            sf.base *= 1.0 - 0.3 * k * (1.0 - porous * 0.5);
+            sf.rough = mix(sf.rough, 0.04, k);
+            sf.spec = mix(sf.spec, 1.0, k);
+            n = normalize(n + hz * (drop - 0.5) * 0.4 * k);
+        }
         float puddle = 0.0;
         if (mat == MAT_TERRAIN && n.y > 0.9 && F.weather.z > 0.0) {
             float cav = vnoise(x.xz * 0.35) * 0.7 + vnoise(x.xz * 1.1 + 7.0) * 0.3;  // where water collects
-            puddle = smoothstep(0.62 - 0.3 * F.weather.z, 0.7 - 0.3 * F.weather.z, cav) * wet * smoothstep(0.9, 0.97, n.y);
+            puddle = smoothstep(0.62 - 0.3 * F.weather.z, 0.7 - 0.3 * F.weather.z, cav) * F.weather.x * smoothstep(0.9, 0.97, n.y);
         }
         if (puddle > 0.0) {
             sf.base = mix(sf.base, sf.base * 0.45, puddle);
             sf.rough = mix(sf.rough, 0.02, puddle);
             sf.spec = mix(sf.spec, 1.0, puddle);
+        }
+        // the world sim's standing water (runoff in dips and craters) is a puddle too
+        if (mat == MAT_TERRAIN && F.sim1.w > 0.5) puddle = max(puddle, smoothstep(0.008, 0.03, simAt(x.xz).y));
+        if (puddle > 0.0) {
+            // raindrop rings in the open; under cover, the sparser rings of drips falling from above
+            float rate = exposed ? F.weather.y : drip * 0.35;
             vec3 pn = vec3(0, 1, 0);
-            if (F.weather.y > 0.0) { vec2 g = ripples(x.xz, F.camPos.w) * F.weather.y; pn = normalize(vec3(-g.x, 1.0, -g.y)); }
+            if (rate > 0.0) { vec2 g = ripples(x.xz, F.camPos.w, rate) * min(rate * 3.0, 1.0); pn = normalize(vec3(-g.x, 1.0, -g.y)); }
             n = normalize(mix(n, pn, puddle));
             sf.n = n;
             sf.T = normalize(cross(vec3(0, 0, 1), n));

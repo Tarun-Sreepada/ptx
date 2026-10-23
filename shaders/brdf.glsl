@@ -19,6 +19,7 @@ struct Surf {
     float rough, metal, spec, trans, cc, ccRough, sheen, aniso, ao;
     float ior;      // index of refraction (transmission)
     float transl;   // diffuse transmission: light through thin leaves / blades from behind (KHR_materials_diffuse_transmission)
+    float sss;      // subsurface profile (sss.glsl: 1 skin, 2 wax, 3 snow, 4 marble), 0 = none
     uint mat;       // MAT_TERRAIN / GRASS / ROCK / MODEL
 };
 
@@ -29,7 +30,7 @@ Surf procSurf(vec3 base, vec3 n, uint mat) {  // terrain, grass, rocks: the old 
     s.T = normalize(t);
     s.rough = mat == MAT_GRASS ? 0.32 : (mat == MAT_TERRAIN ? 1.0 : 0.55);
     s.spec = mat == MAT_GRASS ? 0.7 : (mat == MAT_TERRAIN ? 0.0 : 0.25);
-    s.metal = 0.0; s.trans = 0.0; s.cc = 0.0; s.ccRough = 0.03; s.sheen = 0.0; s.aniso = 0.0; s.ao = 1.0; s.ior = 1.5;
+    s.metal = 0.0; s.trans = 0.0; s.cc = 0.0; s.ccRough = 0.03; s.sheen = 0.0; s.aniso = 0.0; s.ao = 1.0; s.ior = 1.5; s.sss = 0.0;
     s.transl = mat == MAT_GRASS ? 0.6 : 0.0;
     return s;
 }
@@ -97,7 +98,34 @@ vec3 envBRDFApprox2(vec3 F0, float alpha, float NoV) {
 }
 
 // Light transmitted through a blade or leaf picks up a yellow-green tint (chlorophyll passes green, absorbs blue).
+// Path vertices use this fixed tint; primary hits solve the leaf as a thin scattering slab (leafTransmit).
 const vec3 TRANSLUCENT_TINT = vec3(1.2, 1.5, 0.5);
+
+// Thin-slab subsurface scattering for leaves and blades: the two-flux (Kubelka-Munk) solution for a scattering
+// slab over nothing, which is what a random walk through a thin layer converges to. The slab's scattering optical
+// thickness X = S d comes from the translucency (thin, translucent blade ~0.4 .. thick leathery leaf ~1.6); per
+// channel the absorption K/S is solved so the slab reflects the base colour, and the light it lets through follows:
+// red and blue (absorbed by chlorophyll) die out much faster than green, so back-lit leaves glow yellow-green, and a
+// thick leaf passes far less than a thin one.
+vec2 kmSlab(float k, float X) {  // (R, T) of a slab with K/S = k, S d = X
+    float a = 1.0 + k, b = sqrt(a * a - 1.0), e = exp(b * X), sh = 0.5 * (e - 1.0 / e), ch = 0.5 * (e + 1.0 / e);
+    float D = a * sh + b * ch;
+    return vec2(sh, b) / D;
+}
+float kmTransmit(float R, float X) {
+    float rMax = X / (1.0 + X);  // no absorption
+    if (R >= rMax) return 1.0 - rMax;
+    float lo = -9.2, hi = 5.3;   // log K/S
+    for (int i = 0; i < 14; i++) {
+        float m = 0.5 * (lo + hi);
+        if (kmSlab(exp(m), X).x > R) lo = m; else hi = m;
+    }
+    return kmSlab(exp(0.5 * (lo + hi)), X).y;
+}
+vec3 leafTransmit(vec3 base, float transl) {
+    float X = mix(1.6, 0.35, clamp(transl, 0.0, 1.0));
+    return vec3(kmTransmit(base.r, X), kmTransmit(base.g, X), kmTransmit(base.b, X)) * min(transl * 2.5, 1.0);
+}
 
 // The lighting helpers take a material id with the translucency packed above it (bits 8..15 = translucency x 255);
 // grass always has its blades' 0.6.
@@ -111,7 +139,7 @@ float packIorTransl(Surf s) { return s.transl > 0.0 ? -s.transl : s.ior; }
 vec3 evalBRDF(Surf s, vec3 v, vec3 l) {
     vec3 n = s.n;
     float nl = dot(n, l), nv = max(dot(n, v), 1e-4);
-    if (nl <= 0.0) return s.base * (-nl * s.transl / PI) * TRANSLUCENT_TINT;
+    if (nl <= 0.0) return s.transl > 0.0 ? leafTransmit(s.base, s.transl) * (-nl / PI) : vec3(0);
     vec3 B = cross(n, s.T);
     vec3 h = normalize(v + l);
     vec3 hl = vec3(dot(h, s.T), dot(h, B), dot(h, n));
@@ -130,6 +158,16 @@ vec3 evalBRDF(Surf s, vec3 v, vec3 l) {
     }
     return r;
 }
+
+// ---------------------------------------------------------------- small-scale occlusion
+// Micro-shadowing (Chan 2018, "Material advances in Call of Duty: WWII"): a cavity the material's ambient occlusion
+// marks (texture AO, crevices of rock and ground relief) also shadows direct light, except light falling straight
+// in. The cone of directions that sees out of a cavity has cos^2 = 1 - ao, so light at a grazing angle is cut off.
+float microShadow(float ao, float nl) { return clamp(abs(nl) + 2.0 * ao * ao - 1.0, 0.0, 1.0); }
+// Specular occlusion (Lagarde & de Rousiers 2014): the share of a glossy lobe that a cavity of ambient occlusion ao
+// blocks, by view angle and roughness: sharp reflections at normal incidence leave a cavity unhindered, rough ones
+// and grazing views are occluded like diffuse light.
+float specOcclusion(float nv, float ao, float alpha) { return clamp(pow(nv + ao, exp2(-16.0 * alpha - 1.0)) - 1.0 + ao, 0.0, 1.0); }
 
 // ---------------------------------------------------------------- demodulation
 // Directional albedo: the factor lighting is divided by when stored and multiplied by in the composite.

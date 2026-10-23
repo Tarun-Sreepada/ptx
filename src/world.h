@@ -76,7 +76,10 @@ struct MaterialData {
     float anisotropy = 0.f, anisoRot = 0.f;
     float transmission = 0.f, ior = 1.5f, specular = 1.f;
     float translucency = 0.f;        // diffuse transmission (leaves, thin fabric): KHR_materials_diffuse_transmission
+    float sss = 0.f;                 // subsurface scattering profile (sss.glsl): 1 skin, 2 wax, 3 snow, 4 marble; extras "sss"
 };
+// Subsurface profile from a name or number in extras ("skin", "wax", "snow", "marble"), 0 = none.
+float sssProfileOf(const std::string& s);
 // Every texture index of a material, e.g. to remap them when copying materials between models.
 template <class F> void forEachTex(MaterialData& m, F f) {
     for (int* t : {&m.tex, &m.normalTex, &m.ormTex, &m.occTex, &m.emisTex}) *t = f(*t);

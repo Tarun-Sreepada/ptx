@@ -81,6 +81,20 @@ C texel(const std::string& n, float u, float v, float& h, float& r, float& m) {
         r = 0.88f + 0.08f * k;
         return c;
     }
+    if (n == "wax") {  // poured candle wax: creamy, faint swirls and drips; the look is all subsurface (sss.glsl)
+        float k = fbm(u, v, 4, 4, 31), sw = fbm(u + 0.3f * k, v, 8, 3, 32);
+        h = 0.5f + 0.3f * sw;
+        r = 0.35f + 0.1f * k;
+        return mix(C{0.80f, 0.70f, 0.52f}, C{0.88f, 0.80f, 0.62f}, sw);
+    }
+    if (n == "marble") {  // white marble: grey veins along a warped direction, polished
+        float w = fbm(u, v, 4, 5, 41);
+        float vein = fabsf(sinf((u * 2.f + v * 1.3f + 2.5f * w) * 3.14159265f * 2.f));
+        float line = 1.f - std::clamp(vein * 6.f, 0.f, 1.f), fine = 1.f - std::clamp(fabsf(sinf((u * 7.f - v * 3.f + 4.f * w) * 6.2831853f)) * 14.f, 0.f, 1.f);
+        h = 0.5f;
+        r = 0.18f;
+        return mix(mix(C{0.86f, 0.85f, 0.82f}, C{0.78f, 0.77f, 0.75f}, w), C{0.42f, 0.42f, 0.44f}, std::max(line * 0.8f, fine * 0.35f));
+    }
     if (n == "plaster") {
         float k = fbm(u, v, 16, 4, 6);
         h = k;
@@ -163,7 +177,7 @@ C texel(const std::string& n, float u, float v, float& h, float& r, float& m) {
 struct Proc { const char* name; float strength, relief; };  // relief: height map depth (m)
 const Proc PROCS[] = {{"brick", 1.f, 0.012f}, {"concrete", 2.f, 0.003f}, {"plaster", 0.6f, 0.002f}, {"planks", 0.4f, 0.004f},
                       {"stone", 2.5f, 0.03f}, {"metal", 5.f, 0.002f}, {"tiles", 0.8f, 0.004f}, {"roof", 0.5f, 0.02f},
-                      {"asphalt", 1.5f, 0.004f}};
+                      {"asphalt", 1.5f, 0.004f}, {"wax", 0.3f, 0.002f}, {"marble", 2.f, 0.0005f}};
 float reliefOf(const std::string& n) {
     for (auto& p : PROCS) if (n == p.name) return p.relief;
     return 0.f;

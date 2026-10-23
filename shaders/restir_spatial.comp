@@ -1,8 +1,10 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
+#include "sss.glsl"
 
-// ReSTIR DI spatial reuse + final shading (1 shadow ray for the chosen light, 1 for the sun).
+// ReSTIR DI spatial reuse + final shading (1 shadow ray for the chosen light, 1 for the sun). Subsurface materials
+// take their diffuse light from a random walk (sss.glsl) that is lit by the same sun and light at its exit point.
 layout(local_size_x = 8, local_size_y = 8) in;
 
 void main() {
@@ -21,6 +23,11 @@ void main() {
     uint s = seedFor(p, 2u);
     uint NL = lightCount();
     vec3 Ld = vec3(0);
+    bool sssOn = sf.sss > 0.0 && F.sssP.x > 0.5;
+    float ao = (F.settings.z & FLAG_MICRO_SHADOW) != 0u ? sf.ao : 1.0;
+    bool haveL = false;
+    LightPoint lSel;
+    float lW = 0.0;
 
     if (F.lightInfo.y > 0u) {
         Reservoir r = unpackRes(resCur[idx]);
@@ -59,6 +66,9 @@ void main() {
             vec3 f = evalBRDFSplit(sf, v, wi, fd);
             // emitters seen in a near-mirror lobe are shared with the glossy path (glossyEmitWeight)
             if (l.area > 0.0) f = fd + (f - fd) * (1.0 - glossyEmitWeight(sf));
+            if (sssOn) f -= fd;  // its diffuse light comes out of the walk
+            f *= microShadow(ao, dot(n, wi));
+            haveL = true; lSel = l; lW = r.W;
             float side = dot(n, wi) >= 0.0 ? 1.0 : -1.0;
             if (f.r + f.g + f.b > 0.0 && visible(x + n * (EPS * side), wi, shadowLength(l, dist)))
                 Ld += Li * f * r.W;
@@ -68,6 +78,27 @@ void main() {
         resPrev[idx] = vec4(0);
     }
 
-    Ld += sunDirectPrimary(x, sf, v, A, bn2(p, 0u));
+    Ld += sunDirectPrimary(x, sf, v, A, bn2(p, 0u), sssOn ? 0.0 : 1.0, ao);
+
+    if (sssOn) {  // the diffuse lobe as subsurface light: one walk, lit where it comes out
+        vec3 xe, ne, thr;
+        if (sssWalk(x, n, surfDiffuseColor(sf), sf.sss, uint(F.sssP.y), F.sssP.z, s, xe, ne, thr)) {
+            vec3 E = vec3(0);
+            if (F.sunColor.r + F.sunColor.g + F.sunColor.b > 0.0) {
+                vec3 l = sampleConeU(F.sunDir.xyz, F.sunDir.w, vec2(rnd(s), rnd(s)));
+                float c = dot(ne, l);
+                if (c > 0.0 && visibleSun(xe + ne * EPS, l)) E += F.sunColor.rgb * cloudShadow(xe) * underwaterSun(xe) * c;
+            }
+            if (haveL) {
+                vec3 wi;
+                float dist;
+                vec3 Li = lightIncident(lSel, xe, wi, dist);
+                float c = dot(ne, wi);
+                if (c > 0.0 && visible(xe + ne * EPS, wi, shadowLength(lSel, dist))) E += Li * c * lW;
+            }
+            vec3 spec = surfSpecAlbedo(sf, max(dot(n, v), 1e-4));
+            Ld += thr * E / PI * (1.0 - max(spec.r, max(spec.g, spec.b))) / A;  // what the surface's Fresnel lets in
+        }
+    }
     imageStore(directImg, p, vec4(Ld, 1));
 }

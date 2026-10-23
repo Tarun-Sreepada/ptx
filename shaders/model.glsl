@@ -23,7 +23,7 @@ struct Material {
     float heightScale, clearcoat, ccRough, sheen;
     vec3 sheenColor; float aniso;
     float anisoRot, transmission, ior, specular;
-    float transl, pad0, pad1, pad2;  // diffuse transmission
+    float transl, sss, pad1, pad2;  // diffuse transmission, subsurface profile (sss.glsl)
 };
 
 layout(binding = 32) uniform sampler2D textures[MAX_TEXTURES];
@@ -57,7 +57,7 @@ vec4 mtex(uint i, vec2 uv) {
 // Everything the shading needs at a point of a model surface. T: unit tangent (anisotropy direction).
 struct SurfaceMat {
     vec3 base, n, T, emis;
-    float rough, metal, spec, trans, cc, ccRough, sheen, aniso, ao, alpha, ior, transl;
+    float rough, metal, spec, trans, cc, ccRough, sheen, aniso, ao, alpha, ior, transl, sss;
 };
 
 // n: interpolated (geometric side already chosen) normal; dpdu, dpdv: position derivatives along the uv axes.
@@ -95,6 +95,7 @@ SurfaceMat evalMaterial(Material mt, vec2 uv, vec3 n, vec3 dpdu, vec3 dpdv) {
     s.trans = mt.transmission;
     s.ior = mt.ior;
     s.transl = mt.transl;
+    s.sss = mt.sss;
     s.cc = mt.clearcoat;
     s.ccRough = mt.ccRough;
     s.sheen = mt.sheen;

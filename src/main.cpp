@@ -303,7 +303,7 @@ struct GpuMat {
     float heightScale, clearcoat, ccRough, sheen;
     float sheenColor[3]; float aniso;
     float anisoRot, transmission, ior, specular;
-    float transl, pad[3];
+    float transl, sss, pad[2];
 };
 static_assert(sizeof(GpuMat) == 128);
 
@@ -388,6 +388,8 @@ struct Settings {
     float fogDensity = 0.0007f, fogFalloff = 0.08f, fogAniso = 0.6f, fogNoise = 0.6f, fogDist = 150.f, fogBlend = 0.12f;
     float rain = 0.f, wetness = 0.f, puddles = 0.f;  // puddles: the old noise-placed ones; the world sim makes real ones  // weather (surface_fx.comp, post.comp)
     bool rainWets = true;                            // wetness follows the rain (dries slowly after)
+    float soak = 0.f, drip = 0.f;                    // water soaked into porous surfaces, still dripping from cover (surface_fx.comp)
+    float rivulets = 1.f;                            // streaks of water running down steep faces in rain
     float caustics = 1.f;                            // river-bed caustics strength
     bool decals = true;
     float foamTrail = 20.f;
@@ -395,6 +397,10 @@ struct Settings {
     float murk[3] = {0.03f, 0.07f, 0.065f};
     float throwSize = 0.4f, throwSpeed = 12.f;
     int viewMode = 0;
+    // surface shading (brdf.glsl, sss.glsl): subsurface random walk, material micro-shadowing / specular occlusion
+    bool sss = true, snowSSS = true, microShadow = true;
+    int sssSteps = 24;
+    float sssScale = 1.f;
 };
 static Settings S;
 
@@ -455,6 +461,8 @@ struct UBO {
     float vegCol[4];                        // x grass colour variation, y ground colour variation
     float vtP[4];                           // ground virtual texture: finest texel (m), texels per side, levels, on
     float vtRect[14][4];                    // per level: resident world xz rectangle
+    float sssP[4];                          // subsurface: on, max walk steps, distance scale, snow
+    float wet2[4];                          // soaked-in water, drips from cover, rivulets
 };
 
 struct Camera {
@@ -1748,6 +1756,7 @@ template <class F> static GpuMat gpuMaterial(const MaterialData& mt, F slot) {
     memcpy(g.sheenColor, mt.sheenColor, sizeof g.sheenColor);
     g.aniso = mt.anisotropy; g.anisoRot = mt.anisoRot; g.transmission = mt.transmission; g.ior = mt.ior; g.specular = mt.specular;
     g.transl = mt.translucency;
+    g.sss = mt.sss;
     return g;
 }
 static bool isGlass(const MaterialData& m) { return m.transmission > 0.5f; }
@@ -2014,6 +2023,9 @@ static CharAsset* charAsset(const std::string& name) {
     std::string err;
     if (!loadGltf(m->path, m->data, err)) { fprintf(stderr, "character %s: %s\n", m->path.c_str(), err.c_str()); return nullptr; }
     if (m->data.skins.empty()) { fprintf(stderr, "character %s: no skin\n", m->path.c_str()); return nullptr; }
+    // characters are skin (and fur over skin) unless the asset says otherwise: subsurface skin profile (sss.glsl)
+    for (MaterialData& md : m->data.materials)
+        if (md.sss == 0.f && md.metal < 0.5f && md.transmission < 0.5f) md.sss = 1.f;
     uploadModel(*m);
     if (!m->gpu) return nullptr;
     for (auto& md : m->data.meshes) {
@@ -3293,7 +3305,7 @@ static void destroyScreenResources() {
 static uint32_t flags() {
     return (S.restir ? 1u : 0u) | (S.restirTemporal ? 2u : 0u) | (S.restirSpatial ? 4u : 0u) | (S.accumulate ? 8u : 0u) |
            (S.restirGI ? 16u : 0u) | (S.giTemporal ? 32u : 0u) | (S.giSpatial ? 64u : 0u) | (S.giEnabled ? 0u : 128u) |
-           (S.giCache ? 256u : 0u) | (S.giChecker ? 512u : 0u) | (S.giProbes ? 1024u : 0u);
+           (S.giCache ? 256u : 0u) | (S.giChecker ? 512u : 0u) | (S.giProbes ? 1024u : 0u) | (S.microShadow ? 2048u : 0u);
 }
 
 static V3 sunDirection() {
@@ -3468,6 +3480,7 @@ static void updateFrameData() {
     set4(u.ground2, V3{S.groundWarp, S.groundMottle, S.groundMottleScale}, S.darkSpots);
     set4(u.ground3, V3{S.darkSpotSize, S.groundGrit, S.groundCavity}, S.tileBreakup);
     set4(u.vegCol, V3{S.grassColorVar, S.groundSat, 0}, 0);
+    set4(u.sssP, V3{S.sss ? 1.f : 0.f, (float)S.sssSteps, S.sssScale}, S.snowSSS ? 1.f : 0.f);
     for (int i = 0; i < 4; i++) u.groundTex[i] = groundSlots[i];
     u.groundP[0] = 4.f; u.groundP[1] = (float)groundTexSize; u.groundP[2] = groundMaxH[0]; u.groundP[3] = groundMaxH[1];
     u.groundS[0] = S.groundNormal; u.groundS[1] = S.parallax ? 1.f : 0.f; u.groundS[2] = S.parallaxDist;
@@ -3554,11 +3567,24 @@ static void updateFrameData() {
         static double lastWetT = simTime;
         float wdt = std::clamp((float)(simTime - lastWetT), 0.f, 0.25f);
         lastWetT = simTime;
-        if (S.rainWets) {  // soaks in within ~half a minute of rain, dries over a few minutes
-            float target = std::min(S.rain * 1.5f, 1.f);
-            S.wetness += (target - S.wetness) * (1.f - expf(-wdt * (target > S.wetness ? 0.08f : 0.01f)));
+        if (S.rainWets) {
+            // rain only below the snow line (above it the precipitation is snow)
+            float rainHere = cam.pos.y < S.snowLine - 15.f ? S.rain : 0.f;
+            // evaporation: faster in sun and wind
+            float dryK = 0.5f + 1.2f * std::max(sinf(S.sunElev * 3.14159265f / 180.f), 0.f) * (S.clouds ? 1.f - 0.6f * S.cloudCoverage : 1.f) +
+                         0.8f * S.windStrength;
+            auto ease = [&](float& v, float target, float up, float down) {
+                v += (target - v) * (1.f - expf(-wdt * (target > v ? up : down)));
+            };
+            // surface film: wet within ~20 s of rain, runs off / evaporates within a couple of minutes
+            ease(S.wetness, std::min(rainHere * 1.5f, 1.f), 0.05f, 0.012f * dryK);
+            // soaked into porous material: darkens over a minute, dries over ~10-20 minutes
+            ease(S.soak, std::min(rainHere * 2.f, 1.f), 0.015f, 0.0015f * dryK);
+            // canopies and eaves hold water and drip for a minute or so after the rain stops
+            ease(S.drip, std::min(rainHere * 3.f, 1.f), 0.1f, 0.02f);
         }
         u.weather[0] = S.wetness; u.weather[1] = S.rain; u.weather[2] = S.puddles; u.weather[3] = S.caustics;
+        u.wet2[0] = S.soak; u.wet2[1] = S.drip; u.wet2[2] = S.rivulets; u.wet2[3] = 0.f;
         // world map + simulation
         for (int i = 0; i < 8; i++) {
             const std::string& nm = worldmap::paletteName(i);
@@ -6942,6 +6968,20 @@ static void drawUI() {
 
         ImGui::EndDisabled();
     }
+    if (ImGui::CollapsingHeader("Surface shading")) {
+        if (ImGui::Checkbox("Subsurface scattering (random walk)", &S.sss)) resetHistory = true;
+        ImGui::SetItemTooltip("Skin (characters), wax, marble and lying snow: light walks through the material and comes out\n"
+                              "elsewhere (soft shadows edges, glowing thin parts). Leaves and grass use a thin-slab solution.");
+        ImGui::BeginDisabled(!S.sss);
+        ImGui::SliderInt("Walk steps", &S.sssSteps, 4, 64);
+        ImGui::SetItemTooltip("Scattering events per walk before it surfaces where it is (cost: one short ray each)");
+        ImGui::SliderFloat("Scattering distance", &S.sssScale, 0.2f, 5.f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+        ImGui::Checkbox("Snow", &S.snowSSS);
+        ImGui::EndDisabled();
+        if (ImGui::Checkbox("Micro-shadowing + specular occlusion", &S.microShadow)) resetHistory = true;
+        ImGui::SetItemTooltip("Material occlusion (cavities in rock, ground relief, AO textures) shadows direct light at grazing\n"
+                              "angles and occludes glossy reflections");
+    }
     if (ImGui::CollapsingHeader("Display & window")) {
         const char* wm[] = {"Windowed (maximised)", "Borderless (fills the screen)", "Fullscreen (exclusive)"};
         int m = windowMode;
@@ -7244,8 +7284,14 @@ static void drawUI() {
         ImGui::Checkbox("Rain wets the ground", &S.rainWets);
         ImGui::BeginDisabled(S.rainWets);
         ImGui::SliderFloat("Wetness", &S.wetness, 0.f, 1.f, "%.2f");
+        ImGui::SliderFloat("Soaked in", &S.soak, 0.f, 1.f, "%.2f");
+        ImGui::SliderFloat("Dripping", &S.drip, 0.f, 1.f, "%.2f");
         ImGui::EndDisabled();
-        if (S.rainWets) ImGui::Text("Wetness %.2f (soaks in while it rains, dries after)", S.wetness);
+        if (S.rainWets) ImGui::Text("Surface film %.2f, soaked in %.2f, dripping %.2f", S.wetness, S.soak, S.drip);
+        ImGui::SetItemTooltip("Film: glossy water on every surface, runs off within minutes. Soaked: porous surfaces (soil, rock,\n"
+                              "brick, wood, concrete) darken, then dry patchily over 10-20 min (faster in sun and wind).\n"
+                              "Dripping: trees and eaves keep dripping for a minute after the rain.");
+        ImGui::SliderFloat("Rivulets on walls", &S.rivulets, 0.f, 1.f, "%.2f");
         ImGui::SliderFloat("Puddles", &S.puddles, 0.f, 1.f, "%.2f");
     }
     if (ImGui::CollapsingHeader("Impact marks & dust")) {
@@ -7422,7 +7468,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-gi-checker")) S.giChecker = false;
         else if (!strcmp(argv[i], "--no-gi-probes")) S.giProbes = false;
         else if (!strcmp(argv[i], "--sun") && i + 2 < argc) { S.sunElev = (float)atof(argv[++i]); S.sunAzim = (float)atof(argv[++i]); }
-        else if (!strcmp(argv[i], "--rain") && i + 1 < argc) { S.rain = (float)atof(argv[++i]); S.wetness = std::min(S.rain * 1.5f, 1.f); }
+        else if (!strcmp(argv[i], "--rain") && i + 1 < argc) { S.rain = (float)atof(argv[++i]); S.wetness = std::min(S.rain * 1.5f, 1.f); S.soak = std::min(S.rain * 2.f, 1.f); S.drip = std::min(S.rain * 3.f, 1.f); }
+        else if (!strcmp(argv[i], "--wet") && i + 3 < argc) {  // test: film, soak, drip (rain off: the drying state)
+            S.wetness = (float)atof(argv[++i]); S.soak = (float)atof(argv[++i]); S.drip = (float)atof(argv[++i]); S.rainWets = false;
+        }
         else if (!strcmp(argv[i], "--no-grass-refit")) S.grassRefit = false;
         else if (!strcmp(argv[i], "--no-bc7")) texcomp::setEnabled(false);
         else if (!strcmp(argv[i], "--fog-div") && i + 1 < argc) S.fogDiv = atoi(argv[++i]);
@@ -7454,6 +7503,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--view-dist") && i + 1 < argc) { S.viewDist = (float)atof(argv[++i]); loadRadius = std::clamp((int)ceilf(S.viewDist / 64.f), 1, 96); }
         else if (!strcmp(argv[i], "--look") && i + 2 < argc) { cam.yaw = (float)atof(argv[++i]) * 3.14159265f / 180.f; cam.pitch = (float)atof(argv[++i]) * 3.14159265f / 180.f; }
         else if (!strcmp(argv[i], "--walk")) walkMode = true;
+        else if (!strcmp(argv[i], "--no-sss")) S.sss = false;
+        else if (!strcmp(argv[i], "--no-micro")) S.microShadow = false;
         else if (!strcmp(argv[i], "--dof") && i + 2 < argc) { S.dof = true; S.focusDist = (float)atof(argv[++i]); S.fStop = (float)atof(argv[++i]); }  // test: focus (m, 0 auto), f-stop
         else if (!strcmp(argv[i], "--motion-blur") && i + 1 < argc) { S.motionBlur = true; S.mbShutter = (float)atof(argv[++i]); }  // test: shutter fraction
         else if (!strcmp(argv[i], "--phys-cam") && i + 3 < argc) {  // test: f-stop, shutter 1/x s, ISO

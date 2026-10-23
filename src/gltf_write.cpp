@@ -126,7 +126,12 @@ bool writeGlb(const std::string& path, const ModelData& m, std::string& err) {
         if (mt.specular != 1.f) addExt("KHR_materials_specular", fmt("\"specularFactor\":%g", mt.specular));
         if (mt.translucency > 0.f) addExt("KHR_materials_diffuse_transmission", fmt("\"diffuseTransmissionFactor\":%g", mt.translucency));
         if (!ext.empty()) j += ",\"extensions\":{" + ext + "}";
-        if (mt.heightScale > 0.f) j += fmt(",\"extras\":{\"heightScale\":%g}", mt.heightScale);
+        if (mt.heightScale > 0.f || mt.sss > 0.f) {
+            std::string ex;
+            if (mt.heightScale > 0.f) ex += fmt("\"heightScale\":%g", mt.heightScale);
+            if (mt.sss > 0.f) ex += fmt("%s\"sss\":%g", ex.empty() ? "" : ",", mt.sss);
+            j += ",\"extras\":{" + ex + "}";
+        }
         materials += j + "}";
     }
 

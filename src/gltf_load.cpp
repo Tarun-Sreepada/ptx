@@ -60,6 +60,13 @@ bool extraStr(const char* json, const char* key, std::string& out) {
     }
     return true;
 }
+float sssProfileOf(const std::string& s) {
+    static const char* names[] = {"skin", "wax", "snow", "marble"};
+    for (int i = 0; i < 4; i++)
+        if (s.find(names[i]) != std::string::npos) return (float)(i + 1);
+    float v = strtof(s.c_str(), nullptr);
+    return v >= 1.f && v <= 4.f ? floorf(v) : 0.f;
+}
 float extraNum(const char* json, const char* key, float def) {
     std::string s;
     return extraStr(json, key, s) ? (s == "true" ? 1.f : s == "false" ? 0.f : strtof(s.c_str(), nullptr)) : def;
@@ -245,6 +252,7 @@ bool loadGltf(const std::string& path, ModelData& out, std::string& err) {
         if (gm.has_specular) m.specular = gm.specular.specular_factor;
         if (gm.has_diffuse_transmission) m.translucency = gm.diffuse_transmission.diffuse_transmission_factor;
         if (gm.extras.data) m.heightScale = extraNum(gm.extras.data, "heightScale", 0.f);
+        if (std::string ss; gm.extras.data && extraStr(gm.extras.data, "sss", ss)) m.sss = sssProfileOf(ss);
         out.materials.push_back(m);
     }
     uint32_t defaultMat = (uint32_t)out.materials.size();

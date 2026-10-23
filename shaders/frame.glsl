@@ -76,6 +76,8 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 vegCol;          // x grass colour variation, y ground colour variation
     vec4 vtP;             // ground virtual texture (groundvt.glsl): x finest texel (m), y texels per side, z levels, w on
     vec4 vtRect[14];      // per level: resident world xz rectangle (min xz, max xz)
+    vec4 sssP;            // subsurface scattering (sss.glsl): x on, y max walk steps, z scattering distance scale, w snow
+    vec4 wet2;            // surface_fx.comp: x water soaked into porous surfaces, y drips from cover, z rivulets
 } F;
 
 // Camera projection matching cameraRay(): reverse-Z (near plane 0.05 -> depth 1, infinity -> 0).

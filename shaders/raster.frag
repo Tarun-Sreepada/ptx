@@ -48,7 +48,9 @@ void main() {
     sf.rough = rough;
     if (oMat == 0u) sf.spec = 0.5;  // soil / stone: dielectric, F0 ~0.02
     outMat = vec4(sf.rough, sf.metal, sf.spec, sf.trans);
-    outMat2 = vec4(0.0);
+    // lying snow scatters light under its surface (sss.glsl profile 3)
+    bool snowSSS = oMat == 0u && F.sssP.w > 0.5 && snowDepth(Pw.xz) > 0.075;
+    outMat2 = vec4(0.0, 0.0, snowSSS ? -3.0 : 0.0, 0.0);
     outTan = vec4(sf.T, packIorTransl(sf));
     outVel = vec4(oPrev - oP, 0.0);
 }

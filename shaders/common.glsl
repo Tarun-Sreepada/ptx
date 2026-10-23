@@ -11,6 +11,7 @@
 #define FLAG_GI_TEMPORAL    32u
 #define FLAG_GI_SPATIAL     64u
 #define FLAG_NO_GI         128u   // direct light only (A/B view of what GI adds)
+#define FLAG_MICRO_SHADOW 2048u   // material occlusion shadows direct light / occludes glossy reflections (brdf.glsl)
 
 layout(binding = 0) uniform accelerationStructureEXT tlas;
 
@@ -408,7 +409,7 @@ Hit traceClosest(vec3 o, vec3 d, float tmax, vec2 cone, bool full) {
         h.mat = matT(MAT_MODEL, sm.transl);
         h.s.base = sm.base; h.s.n = sm.n; h.s.T = sm.T; h.s.mat = MAT_MODEL;
         h.s.rough = sm.rough; h.s.metal = sm.metal; h.s.spec = sm.spec; h.s.trans = sm.trans;
-        h.s.cc = sm.cc; h.s.ccRough = sm.ccRough; h.s.sheen = sm.sheen; h.s.aniso = sm.aniso; h.s.ao = sm.ao;
+        h.s.cc = sm.cc; h.s.ccRough = sm.ccRough; h.s.sheen = sm.sheen; h.s.aniso = sm.aniso; h.s.ao = sm.ao; h.s.sss = sm.sss;
         return h;
     } else if (inst == MAT_TERRAIN) {
         uint i0 = ti[3u * prim], i1 = ti[3u * prim + 1u], i2 = ti[3u * prim + 2u];
@@ -423,6 +424,7 @@ Hit traceClosest(vec3 o, vec3 d, float tmax, vec2 cone, bool full) {
         if (h.back) h.n = -h.n;
         h.s = procSurf(h.albedo, h.n, h.mat);
         h.s.rough = gr; h.s.ao = gao; h.s.spec = 0.5;
+        if (full && F.sssP.w > 0.5 && snowDepth(h.p.xz) > 0.075) h.s.sss = 3.0;  // snow: subsurface (raster.frag)
         return h;
     } else if (inst == MAT_ROCK) {
         uint vb = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(rq, true);  // variant's base vertex
@@ -533,11 +535,14 @@ float ggxSpec(vec3 n, vec3 v, vec3 l, float rough) {
 }
 
 // Sun at the primary hit through the full BRDF, demodulated (divided by the pixel's albedo A).
-// u: 2D sample for the point on the sun disc (blue noise)
-vec3 sunDirectPrimary(vec3 x, Surf sf, vec3 v, vec3 A, vec2 u) {
+// u: 2D sample for the point on the sun disc (blue noise); kd: share of the diffuse lobe (0 where subsurface
+// scattering replaces it); ao: material occlusion for micro-shadowing (1 = none).
+vec3 sunDirectPrimary(vec3 x, Surf sf, vec3 v, vec3 A, vec2 u, float kd, float ao) {
     if (F.sunColor.r + F.sunColor.g + F.sunColor.b <= 0.0) return vec3(0);
     vec3 l = sampleConeU(F.sunDir.xyz, F.sunDir.w, u);
-    vec3 f = evalBRDF(sf, v, l);
+    vec3 fd;
+    vec3 f = evalBRDFSplit(sf, v, l, fd);
+    f = (f - fd + fd * kd) * microShadow(ao, dot(sf.n, l));
     if (f.r + f.g + f.b <= 0.0) return vec3(0);
     float side = dot(sf.n, l) >= 0.0 ? 1.0 : -1.0;
     if (!visibleSun(x + sf.n * (EPS * side), l)) return vec3(0);
@@ -555,13 +560,14 @@ Surf loadSurf(ivec2 p) {
     s.ior = t.w >= 1.0 ? t.w : 1.5;
     s.transl = t.w < 0.0 ? -t.w : (s.mat == MAT_GRASS ? 0.6 : 0.0);
     s.rough = m.x; s.metal = m.y; s.spec = m.z; s.trans = m.w;
-    s.cc = m2.x; s.ccRough = m2.y; s.sheen = m2.z; s.aniso = m2.w;
+    s.cc = m2.x; s.ccRough = m2.y; s.aniso = m2.w;
+    s.sheen = max(m2.z, 0.0); s.sss = max(-m2.z, 0.0);  // gMat2.z: sheen, or minus the subsurface profile
     return s;
 }
 void storeSurf(ivec2 p, Surf s) {
     imageStore(gAlbedo, p, vec4(s.base, s.ao));
     imageStore(gMat, p, vec4(s.rough, s.metal, s.spec, s.trans));
-    imageStore(gMat2, p, vec4(s.cc, s.ccRough, s.sheen, s.aniso));
+    imageStore(gMat2, p, vec4(s.cc, s.ccRough, s.sss > 0.0 ? -s.sss : s.sheen, s.aniso));
     imageStore(gTan, p, vec4(s.T, packIorTransl(s)));
 }
 // Demodulation albedo of pixel p (0 for sky): what lighting images are divided by and the composite multiplies by.

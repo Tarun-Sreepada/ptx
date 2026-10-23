@@ -82,7 +82,7 @@ void main() {
     rcTrain = rcHash(tile.x * 73856093u ^ tile.y * 19349663u ^ F.res.z * 83492791u) % RC_TRAIN == 0u;
     uint N = isBaked || skip ? 0u : max(F.settings.x, 1u);
     vec3 gl = vec3(0), gW = vec3(0);
-    float gSide = 1.0, gSpread = 0.0, gEmit = 0.0;
+    float gSide = 1.0, gSpread = 0.0, gEmit = 0.0, gOcc = 1.0;
     bool glossy = false;
     {   // the surface is only needed here and after the paths: keep it out of the registers live across them
         Surf sf = loadSurf(p);
@@ -92,6 +92,8 @@ void main() {
             gW /= surfAlbedo(sf, max(dot(n0, v), 1e-4));
             gSide = dot(gN, n0) < 0.0 ? -1.0 : 1.0;
             gEmit = glossyEmitWeight(sf);
+            vec2 ga = surfAlpha(sf);
+            if ((F.settings.z & FLAG_MICRO_SHADOW) != 0u) gOcc = specOcclusion(max(dot(n0, v), 0.0), sf.ao, sqrt(ga.x * ga.y));
         }
     }
 
@@ -106,7 +108,7 @@ void main() {
         bool back;
         pathSunU = k == 0u ? bn2(p, 4u) : vec2(-1);  // the first path's sun sample is blue noise too
         c.L = tracePath(x0, g ? n0 * gSide : n0, d, B, 0u, F.res.w, cone, g ? gEmit : 0.0, s, c.x, c.n, back);
-        if (g) glossyL = gW * c.L;
+        if (g) glossyL = gW * c.L * gOcc;
         else if (restir) updateGI(r, c, lum(c.L) * PI, rnd(s));  // source pdf cos/pi, target lum(L) cos
         else acc += c.L;
     }

@@ -370,6 +370,7 @@ void build(ECell& c, ModelData& d, bool shapes) {
         md.ormTex = md.occTex = lt->second + 2;
         md.rough = md.metal = 1.f;  // factors x the ORM texture
         md.heightScale = matlib::maps(it.mat).heightScale;
+        md.sss = sssProfileOf(it.mat);  // wax, marble
         primMat[key] = (int)d.materials.size();
         d.materials.push_back(md);
         return (uint32_t)d.materials.size() - 1;

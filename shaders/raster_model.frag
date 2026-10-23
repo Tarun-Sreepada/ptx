@@ -87,7 +87,7 @@ void main() {
     outAlbedo = vec4(sm.base, sm.ao);
     outEmis = vec4(dot(sm.emis, sm.emis) > 0.0 && emitterOff(oP) ? vec3(0) : sm.emis, 0.0);
     outMat = vec4(sm.rough, sm.metal, sm.spec, sm.trans);
-    outMat2 = vec4(sm.cc, sm.ccRough, sm.sheen, sm.aniso);
+    outMat2 = vec4(sm.cc, sm.ccRough, sm.sss > 0.0 ? -sm.sss : sm.sheen, sm.aniso);
     outTan = vec4(sm.T, sm.transl > 0.0 ? -sm.transl : sm.ior);
     outVel = vec4(oPrev - oP, 0.0);
 }
