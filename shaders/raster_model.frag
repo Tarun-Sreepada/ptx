@@ -14,6 +14,7 @@ layout(location = 2) in vec2 oUV;
 layout(location = 3) flat in uint oSlot;
 layout(location = 4) flat in float oFade;
 layout(location = 5) flat in uint oInst;
+layout(location = 6) in vec3 oPrev;
 
 layout(location = 0) out float outDepth;
 layout(location = 1) out vec4 outNorm;
@@ -22,6 +23,7 @@ layout(location = 3) out vec4 outEmis;
 layout(location = 4) out vec4 outMat;
 layout(location = 5) out vec4 outMat2;
 layout(location = 6) out vec4 outTan;
+layout(location = 7) out vec4 outVel;
 
 const float POM_DIST = 30.0;  // parallax fades out by this distance (m)
 
@@ -87,4 +89,5 @@ void main() {
     outMat = vec4(sm.rough, sm.metal, sm.spec, sm.trans);
     outMat2 = vec4(sm.cc, sm.ccRough, sm.sheen, sm.aniso);
     outTan = vec4(sm.T, sm.transl > 0.0 ? -sm.transl : sm.ior);
+    outVel = vec4(oPrev - oP, 0.0);
 }

@@ -70,8 +70,10 @@ void main() {
     imageStore(rrNormRough, p, isSky ? vec4(0) : vec4(N4.xyz, rough));
     imageStore(rrViewZ, p, vec4(isSky ? 1e6 : dot(P.xyz - F.camPos.xyz, F.camFwd.xyz)));
 
-    // motion: where this surface point was in the previous frame (sky: rotation only)
-    vec3 dc = isSky ? d : P.xyz - F.camPos.xyz, dp = isSky ? d : P.xyz - F.prevCamPos.xyz;
+    // motion: where this surface point was in the previous frame (sky: rotation only); moving objects carry their
+    // own offset (G-buffer velocity)
+    vec3 Pprev = P.xyz + (w.hit ? vec3(0) : imageLoad(gVel, p).xyz);
+    vec3 dc = isSky ? d : P.xyz - F.camPos.xyz, dp = isSky ? d : Pprev - F.prevCamPos.xyz;
     vec2 mv = vec2(0);
     if (dot(dp, F.prevFwd.xyz) > 1e-4) {
         vec2 cur = pixelOf(dc, F.camRight.xyz, F.camUp.xyz, F.camFwd.xyz, F.camRight.w, F.camUp.w);

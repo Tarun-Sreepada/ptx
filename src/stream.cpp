@@ -11,9 +11,11 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "physics.h"
 #include "prof.h"
+#include "texcomp.h"
 #include "world.h"
 
 namespace {
@@ -113,7 +115,10 @@ std::shared_ptr<Model> request(const std::string& path) {
             }
             size_t bytes = 0;
             for (auto& md : d.meshes) bytes += md.verts.size() * 4 + md.idx.size() * 8;
-            for (auto& t : d.textures) bytes += t.rgba.size() * 4 / 3;
+            for (auto& t : d.textures) {
+                texcomp::prepare(t);  // BC7 + mips, from the texcache (encoded the first time)
+                bytes += t.bc7.empty() ? t.rgba.size() * 4 / 3 : t.bc7.size();
+            }
             m->bytes = bytes;
         } else {
             fprintf(stderr, "stream: %s: %s\n", m->path.c_str(), err.c_str());
@@ -397,6 +402,25 @@ void setCellModel(int cx, int cz, std::shared_ptr<Model> m, std::vector<std::sha
     Cell& c = cells[k];
     if (c.active) deactivate(c);
     std::string path = worldDir + "cells/" + std::to_string(cx) + "_" + std::to_string(cz) + ".glb";
+    // damage stays on a mesh the rebuild didn't change (same slot, place and geometry): walls don't heal when
+    // the editor rebuilds the cell; edited or moved meshes lose theirs
+    std::shared_ptr<Model> old = c.own;
+    std::unordered_set<std::string> keep;
+    if (old && !overrides.empty()) {
+        m->path = path;
+        for (auto& in : m->data.instances) {
+            if (in.mesh < 0) continue;
+            Placed pl{m.get(), in.mesh, in.xf};
+            std::string key = stream::placedKey(pl);
+            if (!overrides.count(key)) continue;
+            for (auto& oin : old->data.instances) {
+                if (oin.mesh < 0 || (size_t)oin.mesh >= old->data.meshes.size()) continue;
+                if (stream::placedKey(Placed{old.get(), oin.mesh, oin.xf}) != key) continue;
+                const MeshData &a = old->data.meshes[oin.mesh], &b = m->data.meshes[in.mesh];
+                if (a.verts == b.verts && a.idx == b.idx) keep.insert(key);
+            }
+        }
+    }
     if (c.own && c.own != m) {
         auto it = models.find(c.own->path);
         if (it != models.end() && it->second == c.own) models.erase(it);
@@ -411,10 +435,9 @@ void setCellModel(int cx, int cz, std::shared_ptr<Model> m, std::vector<std::sha
     m->state = 1;
     models[path] = m;
     c.own = m;
-    // damage done to the old meshes doesn't apply to the rebuilt ones
     std::string pre = "#dmg " + path + "#";
     for (auto it = overrides.begin(); it != overrides.end();)
-        if (it->first.rfind(pre, 0) == 0) { freed.push_back(it->second); it = overrides.erase(it); } else ++it;
+        if (it->first.rfind(pre, 0) == 0 && !keep.count(it->first)) { freed.push_back(it->second); it = overrides.erase(it); } else ++it;
     editChanged = true;
 }
 

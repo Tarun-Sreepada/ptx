@@ -46,6 +46,10 @@ inline void xfAabb(const Xf& a, const float mn[3], const float mx[3], float omn[
     }
 }
 
+// How a static mesh fails when hit (main.cpp breakStatic): Voronoi shatter (concrete, stone, plaster, ...),
+// masonry that comes apart along its mortar into whole bricks, or metal that dents and only tears when hit very hard.
+enum { BREAK_SHATTER, BREAK_BRICK, BREAK_METAL };
+inline int breakKindOf(const std::string& mat) { return mat == "brick" ? BREAK_BRICK : mat == "metal" ? BREAK_METAL : BREAK_SHATTER; }
 struct MeshData {
     std::vector<float> verts;      // pos3 nrm3 uv2
     std::vector<uint32_t> idx;
@@ -53,6 +57,9 @@ struct MeshData {
     float bmin[3] = {}, bmax[3] = {};
     void* shape = nullptr;         // physics mesh shape (refcounted, see physics.h), built by the loader thread
     float strength = 1.f;          // breakability (main.cpp breakStatic): x the breach energy of a brick wall
+    int breakKind = 0;             // BREAK_*: how it fails (from the building material, "mat" extra)
+    int skin = -1;                 // ModelData::skins index when skinned (bind pose verts, model space; not welded)
+    std::vector<float> skinW;      // skinned: per vertex 4 weights + 4 joint indices (as floats), skel.h
 };
 // glTF metal-rough PBR plus the KHR_materials_* lobes the renderer shades (clearcoat, sheen, anisotropy,
 // transmission, ior, specular). Texture indices are into ModelData::textures, -1 = none.
@@ -74,7 +81,11 @@ struct MaterialData {
 template <class F> void forEachTex(MaterialData& m, F f) {
     for (int* t : {&m.tex, &m.normalTex, &m.ormTex, &m.occTex, &m.emisTex}) *t = f(*t);
 }
-struct TextureData { uint32_t w = 0, h = 0; std::vector<uint8_t> rgba; bool linear = false; };  // sRGB unless linear (normal / ORM data), <= 2048
+struct TextureData {
+    uint32_t w = 0, h = 0; std::vector<uint8_t> rgba; bool linear = false;  // sRGB unless linear (normal / ORM data), <= 2048
+    // BC7 blocks of every mip level, level 0 first (texcomp.h); empty = upload rgba and build mips on the GPU
+    std::vector<uint8_t> bc7; uint32_t bcMips = 0; std::vector<uint64_t> bcLevels;  // byte offset of each level in bc7
+};
 struct LightData { float pos[3]; float color[3]; };                         // color = rgb * intensity, glTF units (candela)
 struct ProbeVolume { float mn[3], mx[3]; std::string name; };  // world-space box (bake = 1 node)
 struct InstanceData {
@@ -85,8 +96,23 @@ struct InstanceData {
 enum PropKind { PROP_TREE, PROP_ROCK };
 struct PropData { int kind = PROP_TREE, variant = 0; Xf xf; };
 
+// Skeletal animation (glTF skins + animations, evaluated by skel.h). Joints are a skin's own list, so vertex joint
+// indices index them directly; parents may come after children in it (order[] is parents first).
+struct SkinData {
+    std::vector<std::string> names;
+    std::vector<int> parent;        // joint index, -1: a root, whose parent node's world transform is rootXf
+    std::vector<int> order;         // evaluation order, parents first
+    std::vector<float> rest;        // per joint local t3 r4 (quaternion xyzw) s3
+    std::vector<Xf> invBind;        // model space -> joint space at bind
+    std::vector<Xf> rootXf;         // per joint (identity unless a root)
+};
+struct ClipChannel { int joint = 0, path = 0; bool step = false; std::vector<float> t, v; };  // path 0 T, 1 R, 2 S
+struct ClipData { std::string name; float duration = 0.f; int skin = 0; std::vector<ClipChannel> ch; };
+
 struct ModelData {
     std::vector<MeshData> meshes;
+    std::vector<SkinData> skins;
+    std::vector<ClipData> clips;
     std::vector<MaterialData> materials;
     std::vector<TextureData> textures;
     std::vector<InstanceData> instances;  // scene nodes: own meshes or asset references

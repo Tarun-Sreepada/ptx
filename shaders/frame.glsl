@@ -63,9 +63,19 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 sim1;            // x angle of repose (tan), y avalanche mobility, z sim step (s), w sim on
     vec4 sim2;            // x snowfall (m/s at full precipitation), y wetness decay (1/s), z water mobility, w river swell from rain (m)
     vec4 simBrush;        // editor snow brush: x, z, radius (0 = off), metres per second (negative removes)
-    vec4 fractal;         // ground detail (ground.glsl): x mode (0 textures, 1 fractal, 2 hybrid), y relief, z pebbles, w finest scale (m)
+    vec4 fractal;         // ground detail (ground.glsl): x mode (0 textures, 1 fractal, 2 hybrid, 3 layered virtual texture), y relief, z pebbles, w finest scale (m)
     ivec4 craterGrid;     // crater bins (material.glsl): xy first bin (16 m), z bins per side, w valid
     ivec4 fogRes;         // volumetric fog: x resolution divisor (1 full .. 4 quarter), yz grid size (volfog.comp)
+    vec4 clouds3;         // stratus deck: x coverage, y lumpiness (stratus -> stratocumulus), z base (m), w thickness (m)
+    vec4 clouds4;         // x cumulonimbus amount, y cumulonimbus top (m), z cirrus amount, w cirrus altitude (m)
+    vec4 clouds5;         // cirrus: x strand length, y strand fineness, z puffiness (strands -> tufts)
+    vec4 grassC;          // x clumping, y clump size (m), z blade width scale, w curvature
+    vec4 grassD;          // x twist, y outward tilt, z height variation, w dead blade fraction
+    vec4 ground2;         // x macro warp, y mottling strength, z mottling scale, w dark spots
+    vec4 ground3;         // x dark spot size, y grit, z cavity shading, w tile breakup
+    vec4 vegCol;          // x grass colour variation, y ground colour variation
+    vec4 vtP;             // ground virtual texture (groundvt.glsl): x finest texel (m), y texels per side, z levels, w on
+    vec4 vtRect[14];      // per level: resident world xz rectangle (min xz, max xz)
 } F;
 
 // Camera projection matching cameraRay(): reverse-Z (near plane 0.05 -> depth 1, infinity -> 0).

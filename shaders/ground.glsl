@@ -6,6 +6,7 @@
 #define GROUND_GLSL
 #include "material.glsl"
 #include "model.glsl"
+#include "groundvt.glsl"
 
 // ---------------------------------------------------------------- fractal ground
 // Generated per pixel from world position, so it never repeats and has detail at any distance: an eroded fBm
@@ -35,12 +36,31 @@ vec4 cellular(vec2 x) {
         }
     return vec4(sqrt(best), off, id);
 }
+// Dark spots: damp / humus-rich patches a few metres across (ground3.x scales them), irregular from a warp.
+float darkSpot(vec2 xz) {
+    float a = F.ground2.w;
+    if (a <= 0.0) return 0.0;
+    vec2 q = xz / (3.0 * max(F.ground3.x, 0.05));
+    q += 0.8 * vec2(noiseD(q * 0.5 + 4.1).x, noiseD(q * 0.5 + 8.3).x);
+    float n = noiseD(q).x * 0.7 + noiseD(q * 2.7 + 1.9).x * 0.3;
+    return smoothstep(1.0 - 0.5 * a, 1.0 - 0.5 * a + 0.12, n);
+}
+// Whole-ground variation on top of either detail path: dark spots, then patchy saturation (dry / lush).
+vec3 groundVary(vec3 c, vec2 xz, inout float rough) {
+    float d = darkSpot(xz);
+    c *= 1.0 - 0.55 * d;
+    rough *= 1.0 - 0.12 * d;  // damp
+    float sv = noiseD(xz * 0.09 + 20.0).x;
+    float lum = dot(c, vec3(0.3, 0.5, 0.2));
+    return max(mix(vec3(lum), c, 1.0 + (sv - 0.5) * 1.2 * F.vegCol.y), vec3(0.0));
+}
+
 struct FractalG { float h; vec2 grad; float cavity, stone; vec3 stoneCol; };
 // pix: pixel footprint (m) at P; bare: 0 grassy soil .. 1 stony ground
 FractalG fractalGround(vec2 p, float pix, float bare, vec3 soil) {
     FractalG g;
     // domain warp: large-scale distortion so features don't line up
-    vec2 q = p + 1.5 * vec2(noiseD(p * 0.21).x, noiseD(p * 0.21 + 7.3).x);
+    vec2 q = p + 1.5 * F.ground2.x * vec2(noiseD(p * 0.21).x, noiseD(p * 0.21 + 7.3).x);
     float amp = 0.15, freq = 0.5, h = 0.0, hn = 0.0, ampSum = 0.0;  // amp: metres (15 cm bumps at the 2 m scale)
     vec2 dsum = vec2(0), grad = vec2(0);
     float finest = max(F.fractal.w, 1e-4);
@@ -63,7 +83,7 @@ FractalG fractalGround(vec2 p, float pix, float bare, vec3 soil) {
     }
     g.h = ampSum > 0.0 ? hn / ampSum : 0.5;           // normalised 0..1 for colour variation
     g.grad = grad;
-    g.cavity = 1.0 - smoothstep(0.3, 0.55, g.h);       // low spots collect shade and fine dirt  // low spots collect shade and fine dirt
+    g.cavity = (1.0 - smoothstep(0.3, 0.55, g.h)) * F.ground3.z;  // low spots collect shade and fine dirt
     // pebbles (6 cm) and grit (1.8 cm), fewer where grass grows, only where they cover a few pixels
     g.stone = 0.0;
     g.stoneCol = vec3(0);
@@ -74,7 +94,7 @@ FractalG fractalGround(vec2 p, float pix, float bare, vec3 soil) {
         vec4 c = cellular(q / cs + float(k) * 31.7);
         // stones gather in patches (washed together, weathered out of the soil), grit is sparse
         float patchK = smoothstep(0.35, 0.8, noiseD(p * (k == 0 ? 0.35 : 0.9) + float(k) * 5.0).x);
-        float r = (0.22 + 0.2 * c.w), dens = F.fractal.z * mix(0.15, 1.0, bare) * patchK * (k == 0 ? 0.6 : 0.25);
+        float r = (0.22 + 0.2 * c.w), dens = F.fractal.z * mix(0.15, 1.0, bare) * patchK * (k == 0 ? 0.6 : 0.25 * F.ground3.y);
         if (fract(c.w * 13.7) > dens) continue;
         float m = (1.0 - smoothstep(r * 0.75, r, c.x)) * vis;
         if (m <= g.stone) continue;
@@ -89,6 +109,46 @@ FractalG fractalGround(vec2 p, float pix, float bare, vec3 soil) {
     }
     g.grad = grad;
     return g;
+}
+
+// fractal only (mode 1): per-pixel fractalGround, triplanar so slopes keep their scale
+void fractalDetail(vec3 P, inout vec3 n, float pix, float soilW, float zone, inout vec3 albedo, inout float rough, inout float ao) {
+    // triplanar: top projection on flat ground; on slopes (sculpted hills, crater walls) also the planes facing x
+    // and z, blended by the normal, so the pattern keeps its scale instead of stretching down the face
+    vec3 tw3 = pow(abs(n), vec3(6.0));
+    tw3 /= tw3.x + tw3.y + tw3.z;
+    FractalG fg = fractalGround(P.xz, pix, 1.0 - soilW, albedo);
+    vec3 G = vec3(fg.grad.x, 0.0, fg.grad.y) * tw3.y;  // world-space relief gradient
+    float fh = fg.h * tw3.y, fcav = fg.cavity * tw3.y, fst = fg.stone * tw3.y;
+    vec3 fsc = fg.stoneCol * fg.stone * tw3.y;
+    if (tw3.x > 0.02) {
+        FractalG sx = fractalGround(P.zy + vec2(37.0, 0.0), pix, 1.0, albedo);  // plane facing x: (z, y)
+        G += vec3(0.0, sx.grad.y, sx.grad.x) * tw3.x;
+        fh += sx.h * tw3.x; fcav += sx.cavity * tw3.x; fst += sx.stone * tw3.x; fsc += sx.stoneCol * sx.stone * tw3.x;
+    }
+    if (tw3.z > 0.02) {
+        FractalG sz = fractalGround(P.xy + vec2(0.0, 53.0), pix, 1.0, albedo);  // plane facing z: (x, y)
+        G += vec3(sz.grad.x, sz.grad.y, 0.0) * tw3.z;
+        fh += sz.h * tw3.z; fcav += sz.cavity * tw3.z; fst += sz.stone * tw3.z; fsc += sz.stoneCol * sz.stone * tw3.z;
+    }
+    fg.h = fh; fg.cavity = fcav;
+    fg.stoneCol = fst > 1e-4 ? fsc / fst : albedo;
+    fg.stone = fst;
+    float k = 1.0 - zone;
+    // mottling: damper / drier, finer / coarser patches at 0.5-3 m, plus the relief's own light / dark (3D, so
+    // it doesn't stretch either)
+    float ms = 1.0 / max(F.ground2.z, 0.1);
+    float mott = noiseD(P.xz * 0.37 * ms + 3.1 + P.y * 0.29).x * 0.6 + noiseD(P.xz * 1.9 * ms + P.y * 1.3).x * 0.4;
+    float varC = (0.72 + 0.56 * fg.h) * (1.0 + 0.4 * (mott - 0.5) * F.ground2.y);
+    vec3 col = albedo * varC * mix(1.0, 0.8, fg.cavity);
+    col = groundVary(col, P.xz, rough);
+    col = mix(col, fg.stoneCol, fg.stone);
+    albedo = mix(albedo, col, k);
+    // bump: tilt the normal against the relief gradient's part along the surface
+    vec3 Gt = (G - dot(G, n) * n) * F.fractal.y * k;
+    n = normalize(n - Gt);
+    rough = mix(rough, mix(0.95, 0.6, fg.stone), k);
+    ao = mix(ao, mix(1.0, 0.7, fg.cavity * (1.0 - fg.stone)), k);
 }
 
 struct GroundSample { vec4 alb; vec4 det; vec3 avg; };
@@ -178,40 +238,53 @@ void groundSurfaceDetail(inout vec3 P, vec3 v, float dist, bool pom, inout vec3 
     float soilW = smoothstep(0.05, 0.6, grassMask(P.xz));
     uint fractalMode = uint(F.fractal.x + 0.5);
     if (fractalMode == 1u) {  // fractal only: no textures, no repeat
-        // triplanar: top projection on flat ground; on slopes (sculpted hills, crater walls) also the planes facing x
-        // and z, blended by the normal, so the pattern keeps its scale instead of stretching down the face
-        vec3 tw3 = pow(abs(n), vec3(6.0));
-        tw3 /= tw3.x + tw3.y + tw3.z;
-        FractalG fg = fractalGround(P.xz, pix, 1.0 - soilW, albedo);
-        vec3 G = vec3(fg.grad.x, 0.0, fg.grad.y) * tw3.y;  // world-space relief gradient
-        float fh = fg.h * tw3.y, fcav = fg.cavity * tw3.y, fst = fg.stone * tw3.y;
-        vec3 fsc = fg.stoneCol * fg.stone * tw3.y;
-        if (tw3.x > 0.02) {
-            FractalG sx = fractalGround(P.zy + vec2(37.0, 0.0), pix, 1.0, albedo);  // plane facing x: (z, y)
-            G += vec3(0.0, sx.grad.y, sx.grad.x) * tw3.x;
-            fh += sx.h * tw3.x; fcav += sx.cavity * tw3.x; fst += sx.stone * tw3.x; fsc += sx.stoneCol * sx.stone * tw3.x;
-        }
-        if (tw3.z > 0.02) {
-            FractalG sz = fractalGround(P.xy + vec2(0.0, 53.0), pix, 1.0, albedo);  // plane facing z: (x, y)
-            G += vec3(sz.grad.x, sz.grad.y, 0.0) * tw3.z;
-            fh += sz.h * tw3.z; fcav += sz.cavity * tw3.z; fst += sz.stone * tw3.z; fsc += sz.stoneCol * sz.stone * tw3.z;
-        }
-        fg.h = fh; fg.cavity = fcav;
-        fg.stoneCol = fst > 1e-4 ? fsc / fst : albedo;
-        fg.stone = fst;
+        fractalDetail(P, n, pix, soilW, zone, albedo, rough, ao);
+        return;
+    }
+    if (fractalMode == 3u) {  // layered, generated into the virtual texture (groundgen.glsl / groundvt.glsl)
         float k = 1.0 - zone;
-        // mottling: damper / drier, finer / coarser patches at 0.5-3 m, plus the relief's own light / dark (3D, so
-        // it doesn't stretch either)
-        float mott = noiseD(P.xz * 0.37 + 3.1 + P.y * 0.29).x * 0.6 + noiseD(P.xz * 1.9 + P.y * 1.3).x * 0.4;
-        float varC = (0.72 + 0.56 * fg.h) * (0.8 + 0.4 * mott);
-        vec3 col = albedo * varC * mix(1.0, 0.8, fg.cavity);
-        col = mix(col, fg.stoneCol, fg.stone);
-        albedo = mix(albedo, col, k);
-        // bump: tilt the normal against the relief gradient's part along the surface
-        vec3 Gt = (G - dot(G, n) * n) * F.fractal.y * k;
-        n = normalize(n - Gt);
-        rough = mix(rough, mix(0.95, 0.6, fg.stone), k);
-        ao = mix(ao, mix(1.0, 0.7, fg.cavity * (1.0 - fg.stone)), k);
+        float top = smoothstep(0.55, 0.8, abs(n.y));  // the virtual texture is projected straight down
+        VtSample s;
+        s.ok = false;
+        if (top > 0.0) {
+            // parallax occlusion on the generated height, at one level for the whole march
+            if (pom && F.groundS.y > 0.5 && dist < F.groundS.z && -v.y > 0.05 && F.fractal.y > 0.01) {
+                int lp = vtLevelFor(P.xz, pix);
+                if (lp < int(F.vtP.z)) {
+                    float maxH = 0.06 * F.fractal.y;
+                    vec2 stepXZ = v.xz / max(-v.y, 0.15);
+                    int N = int(mix(24.0, 8.0, -v.y));
+                    float dd = 2.0 * maxH / float(N), depth = 0.0, prevGap = 0.0;
+                    vec2 xz = P.xz;
+                    for (int i = 0; i < N; i++) {
+                        float gap = maxH - vtHeight(xz, lp) * F.fractal.y - depth;
+                        if (gap <= 0.0) {
+                            xz -= stepXZ * dd * (1.0 - prevGap / max(prevGap - gap, 1e-6));
+                            break;
+                        }
+                        prevGap = gap;
+                        depth += dd;
+                        xz += stepXZ * dd;
+                    }
+                    P.xz = mix(P.xz, xz, (1.0 - smoothstep(F.groundS.z * 0.6, F.groundS.z, dist)) * top);
+                }
+            }
+            s = vtFetch(P.xz, pix);
+        }
+        vec3 a1 = albedo, n1 = n;
+        float r1 = rough, o1 = ao;
+        if (!s.ok || top * s.w < 0.99) fractalDetail(P, n1, pix, soilW, zone, a1, r1, o1);  // slopes / not generated yet
+        if (!s.ok) { albedo = a1; n = n1; rough = r1; ao = o1; return; }
+        // stones under grass mostly hidden by the soil it grows in
+        float hide = s.stone * soilW * 0.6;
+        vec3 rel = mix(s.rel, vec3(1.0), hide);
+        vec3 G = vec3(s.slope.x, 0.0, s.slope.y) * F.fractal.y * k * (1.0 - hide);
+        vec3 n2 = normalize(n - (G - dot(G, n) * n));
+        top *= s.w;  // fades out past the cached area instead of ending at an edge
+        albedo = mix(a1, mix(albedo, albedo * rel, k), top);
+        n = normalize(mix(n1, n2, top));
+        rough = mix(r1, mix(rough, s.rough, k), top);
+        ao = mix(o1, mix(ao, ao * s.ao, k), top);
         return;
     }
 
@@ -244,7 +317,7 @@ void groundSurfaceDetail(inout vec3 P, vec3 v, float dist, bool pom, inout vec3 
     tw /= tw.x + tw.y + tw.z;
     // second, rotated and scaled lookup blended by low-frequency noise breaks up the tile repetition
     vec2 uv2 = mat2(0.8, -0.6, 0.6, 0.8) * uv * 0.73 + vec2(0.37, 0.71);
-    float w2 = smoothstep(0.3, 0.7, vnoise(P.xz * 0.35 + 11.0));
+    float w2 = smoothstep(0.3, 0.7, vnoise(P.xz * 0.35 + 11.0)) * clamp(F.ground3.w, 0.0, 1.0);
     vec4 alb = vec4(0), det = vec4(0);
     vec3 avg = vec3(0);
     for (int s = 0; s < 2; s++) {
@@ -273,11 +346,11 @@ void groundSurfaceDetail(inout vec3 P, vec3 v, float dist, bool pom, inout vec3 
     // colour: the macro terrain colour (green / brown / river / craters) carries the large scale,
     // the texture adds detail around its own mean; stones keep their own colour
     vec3 detailCol = albedo * alb.rgb / max(avg, vec3(0.02));
-    albedo = mix(albedo, mix(detailCol, alb.rgb, alb.a * 0.7), k);
+    albedo = mix(albedo, groundVary(mix(detailCol, alb.rgb, alb.a * 0.7), P.xz, rough), k);
     vec2 dn = (det.xy * 2.0 - 1.0) * F.groundS.x * k * tw.y;  // detail normals are top-projected: only where that dominates
     n = normalize(vec3(n.x + dn.x, n.y, n.z + dn.y));
     float stone = alb.a;
     rough = mix(rough, mix(0.96, mix(0.82, 0.55, det.b), stone), k);
-    ao = mix(ao, mix(1.0, det.a, 0.85), k);
+    ao = mix(ao, mix(1.0, det.a, 0.85 * min(F.ground3.z, 1.5)), k);
 }
 #endif

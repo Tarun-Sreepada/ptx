@@ -10,6 +10,7 @@ layout(location = 1) in vec3 oN;
 layout(location = 2) flat in uint oMat;
 layout(location = 3) in float oT;
 layout(location = 4) flat in uint oBlade;
+layout(location = 5) in vec3 oPrev;
 
 layout(location = 0) out float outDepth;
 layout(location = 1) out vec4 outNorm;
@@ -18,6 +19,7 @@ layout(location = 3) out vec4 outEmis;
 layout(location = 4) out vec4 outMat;
 layout(location = 5) out vec4 outMat2;
 layout(location = 6) out vec4 outTan;
+layout(location = 7) out vec4 outVel;
 
 void main() {
     vec3 n = oMat == 1u ? normalize(cross(dFdx(oP), dFdy(oP))) : normalize(oN);
@@ -48,4 +50,5 @@ void main() {
     outMat = vec4(sf.rough, sf.metal, sf.spec, sf.trans);
     outMat2 = vec4(0.0);
     outTan = vec4(sf.T, packIorTransl(sf));
+    outVel = vec4(oPrev - oP, 0.0);
 }

@@ -72,6 +72,78 @@ vec3 precipitation(ivec2 p, ivec2 sz, vec3 c) {
 
 vec3 ld(ivec2 q, ivec2 sz) { return texelFetch(hdrTex, clamp(q, ivec2(0), sz - 1), 0).rgb; }
 
+float hashf(uint x) { return float(hashu(x)) / 4294967295.0; }
+
+// ---------------------------------------------------------------- camera model
+// Thin lens on a full-frame sensor (24 mm tall): focal length from the vertical FOV, aperture diameter post3.y
+// (= f / N). Depth comes from the render-resolution G-buffer (distance along the ray).
+const float SENSOR_H = 0.024;
+ivec2 renderPx(vec2 q, ivec2 sz) { return clamp(ivec2(q * vec2(F.res.xy) / vec2(sz)), ivec2(0), ivec2(F.res.xy) - 1); }
+float sceneDist(vec2 q, ivec2 sz) { float t = imageLoad(gDepth, renderPx(q, sz)).r; return t < 0.0 ? 1e5 : t; }
+float focusDist(ivec2 sz) { return F.post3.x > 0.0 ? F.post3.x : sceneDist(vec2(sz) * 0.5, sz); }  // 0 = autofocus on the centre
+// circle of confusion radius in output pixels
+float cocPx(float d, float zf, ivec2 sz) {
+    float f = 0.5 * SENSOR_H / F.camUp.w, A = F.post3.y;
+    float c = A * f * abs(d - zf) / max(d * (zf - f), 1e-4);
+    return min(0.5 * c / SENSOR_H * float(sz.y), 32.0);
+}
+// gather depth of field: Vogel disc over the largest blur, each tap weighted by whether its own circle covers us
+vec3 depthOfField(ivec2 p, ivec2 sz, vec3 c, out float coc0) {
+    float zf = focusDist(sz);
+    coc0 = cocPx(sceneDist(vec2(p) + 0.5, sz), zf, sz);
+    const int N = 40;
+    const float RMAX = 32.0;
+    vec3 acc = c * 1.0;
+    float wsum = 1.0;
+    float rot = hashf(uint(p.x) * 1973u + uint(p.y) * 9277u + uint(F.res.z) * 26699u) * 6.2831853;
+    for (int i = 0; i < N; i++) {
+        float r = sqrt((float(i) + 0.5) / float(N)) * RMAX, a = float(i) * 2.3999632 + rot;
+        vec2 o = vec2(cos(a), sin(a)) * r;
+        vec2 q = vec2(p) + 0.5 + o;
+        float cs = cocPx(sceneDist(q, sz), zf, sz);
+        // a tap counts if its blur reaches us; behind-focus taps only blur over pixels at least as blurry
+        float w = clamp(cs - r + 1.0, 0.0, 1.0) * (cs < coc0 && sceneDist(q, sz) > zf ? clamp(coc0 - r + 1.0, 0.0, 1.0) : 1.0);
+        acc += texelFetch(hdrTex, clamp(ivec2(q), ivec2(0), sz - 1), 0).rgb * w;
+        wsum += w;
+    }
+    return acc / wsum;
+}
+// motion blur along the per-pixel screen motion (camera + object velocity), over the shutter fraction post3.z
+vec2 screenMotion(vec2 q, ivec2 sz) {
+    ivec2 rp = renderPx(q, sz);
+    float t = imageLoad(gDepth, rp).r;
+    vec3 P, Pp;
+    vec3 d = cameraRay(rp);
+    if (t < 0.0) { P = F.camPos.xyz + d * 1e4; Pp = F.prevCamPos.xyz + d * 1e4; }  // sky: rotation only
+    else { P = F.camPos.xyz + d * t; Pp = P + imageLoad(gVel, rp).xyz; }
+    vec2 pp;
+    if (!prevPixel(Pp, pp)) return vec2(0);
+    vec2 cur = vec2(rp);
+    return (cur - pp) * vec2(sz) / vec2(F.res.xy);  // output pixels moved since last frame
+}
+vec3 motionBlur(ivec2 p, ivec2 sz, vec3 c, out float len) {
+    vec2 mv = screenMotion(vec2(p) + 0.5, sz) * F.post3.z;
+    len = length(mv);
+    if (len < 0.75) return c;
+    if (len > 64.0) { mv *= 64.0 / len; len = 64.0; }
+    const int N = 12;
+    float j = hashf(uint(p.x) * 7919u + uint(p.y) * 104729u + uint(F.res.z)) - 0.5;
+    vec3 acc = vec3(0);
+    float wsum = 0.0;
+    float d0 = sceneDist(vec2(p) + 0.5, sz);
+    for (int i = 0; i < N; i++) {
+        float t = (float(i) + 0.5 + j) / float(N) - 0.5;
+        vec2 q = vec2(p) + 0.5 + mv * t;
+        // a sharp background doesn't smear over a moving foreground: taps nearer than us count, farther ones only
+        // when they move at least as much
+        float dq = sceneDist(q, sz);
+        float w = dq <= d0 * 1.02 ? 1.0 : clamp(length(screenMotion(q, sz)) * F.post3.z / max(len, 1e-3), 0.0, 1.0);
+        acc += texelFetch(hdrTex, clamp(ivec2(q), ivec2(0), sz - 1), 0).rgb * w;
+        wsum += w;
+    }
+    return wsum > 0.0 ? acc / wsum : c;
+}
+
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     ivec2 sz = textureSize(hdrTex, 0);
@@ -79,7 +151,18 @@ void main() {
     vec3 c = ld(p, sz);
     uint view = F.settings.w;
     if (view >= 4u) { imageStore(outImg, p, vec4(clamp(c, 0.0, 1.0), 1)); return; }  // debug views: as is
-    float sharp = F.post2.y;
+    // lens: chromatic aberration (red and blue scaled about the centre, post1.w px at the corner)
+    vec2 uv0 = (vec2(p) + 0.5) / vec2(sz);
+    if (F.post1.w > 0.0) {
+        vec2 dc = uv0 - 0.5;
+        vec2 k = dc * (F.post1.w / (0.7071 * float(sz.x)));
+        c.r = textureLod(hdrTex, uv0 - k, 0.0).r;
+        c.b = textureLod(hdrTex, uv0 + k, 0.0).b;
+    }
+    float blur = 0.0;
+    if (F.post3.w > 0.5) { float coc; c = depthOfField(p, sz, c, coc); blur = max(blur, coc); }
+    if (F.post3.z > 0.0) { float len; c = motionBlur(p, sz, c, len); blur = max(blur, len); }
+    float sharp = blur > 1.0 ? 0.0 : F.post2.y;  // don't sharpen what the lens / shutter blurred
     if (sharp > 0.0) {  // CAS on a compressed copy (so the HDR range doesn't dominate the contrast estimate)
         vec3 n = ld(p + ivec2(0, -1), sz), s = ld(p + ivec2(0, 1), sz), w = ld(p + ivec2(-1, 0), sz), e = ld(p + ivec2(1, 0), sz);
         vec3 cc = c / (1.0 + c), nn = n / (1.0 + n), ss = s / (1.0 + s), ww = w / (1.0 + w), ee = e / (1.0 + e);
@@ -94,6 +177,19 @@ void main() {
     c = mix(c, textureLod(bloomTex, uv, 0.0).rgb, clamp(F.post1.x, 0.0, 1.0));
     c = precipitation(p, sz, c);
     c *= exposureNow();
+    // vignetting: natural cos^4 falloff of the image plane, more at wide apertures (post1.z = amount)
+    if (F.post1.z > 0.0) {
+        vec2 ndc = uv0 * 2.0 - 1.0;
+        vec2 tn = ndc * vec2(F.camUp.w * F.camRight.w, F.camUp.w);
+        float cosT = inversesqrt(1.0 + dot(tn, tn));
+        c *= mix(1.0, cosT * cosT * cosT * cosT, F.post1.z);
+    }
+    // sensor noise (post2.x): photon shot noise ~ sqrt(signal) plus a little read noise, per channel
+    if (F.post2.x > 0.0) {
+        uint h = uint(p.x) * 73856093u ^ uint(p.y) * 19349663u ^ uint(F.res.z) * 83492791u;
+        vec3 n = vec3(hashf(h), hashf(h + 1u), hashf(h + 2u)) + vec3(hashf(h + 3u), hashf(h + 4u), hashf(h + 5u)) - 1.0;  // ~triangular
+        c = max(c + n * F.post2.x * (sqrt(max(c, vec3(0))) * 0.08 + 0.004), vec3(0));
+    }
     uint display = uint(F.post4.x + 0.5);
     if (display == 0u) {
         imageStore(outImg, p, vec4(srgbOETF(tonemapSDR(c)), 1));

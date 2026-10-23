@@ -65,6 +65,7 @@ layout(binding = 57, rgba16f) uniform image2D specImg;    // demodulated glossy 
 layout(binding = 58, rgba16f) uniform image2D hdrImg;     // the HDR scene at output resolution, before post (post.comp)
 layout(binding = 60, rgba16f) uniform image2D fogImg;     // volumetric fog, half resolution: in-scatter, transmittance
 layout(binding = 61, rgba16f) uniform image2D fogHist;
+layout(binding = 62, rgba16f) uniform image2D gVel;       // G-buffer velocity: xyz = where the surface was last frame - where it is (m)
 
 layout(push_constant) uniform PC { uint a, b, c, d; } pc;
 
@@ -424,7 +425,8 @@ Hit traceClosest(vec3 o, vec3 d, float tmax, vec2 cone, bool full) {
         h.s.rough = gr; h.s.ao = gao; h.s.spec = 0.5;
         return h;
     } else if (inst == MAT_ROCK) {
-        uint i0 = ri[3u * prim], i1 = ri[3u * prim + 1u], i2 = ri[3u * prim + 2u];
+        uint vb = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(rq, true);  // variant's base vertex
+        uint i0 = ri[3u * prim] + vb, i1 = ri[3u * prim + 1u] + vb, i2 = ri[3u * prim + 2u] + vb;
         vec3 nObj = vec3(rv[6u * i0 + 3u], rv[6u * i0 + 4u], rv[6u * i0 + 5u]) * w.x +
                     vec3(rv[6u * i1 + 3u], rv[6u * i1 + 4u], rv[6u * i1 + 5u]) * w.y +
                     vec3(rv[6u * i2 + 3u], rv[6u * i2 + 4u], rv[6u * i2 + 5u]) * w.z;

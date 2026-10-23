@@ -110,6 +110,91 @@ static bool decodeImage(const cgltf_image* img, const std::string& baseDir, Text
     return true;
 }
 
+// glTF skins -> SkinData, animations -> ClipData (channels on a skin's joints; other targets are dropped)
+static void loadSkins(const cgltf_data* data, ModelData& out) {
+    std::map<const cgltf_node*, std::pair<int, int>> jointOf;  // node -> (skin, joint)
+    for (size_t si = 0; si < data->skins_count; si++) {
+        const cgltf_skin& sk = data->skins[si];
+        SkinData sd;
+        size_t n = sk.joints_count;
+        for (size_t j = 0; j < n; j++) jointOf.emplace(sk.joints[j], std::make_pair((int)si, (int)j));
+        sd.names.resize(n);
+        sd.parent.assign(n, -1);
+        sd.rest.resize(n * 10);
+        sd.invBind.assign(n, xfIdentity());
+        sd.rootXf.assign(n, xfIdentity());
+        std::vector<int> depth(n, 0);
+        for (size_t j = 0; j < n; j++) {
+            const cgltf_node* jn = sk.joints[j];
+            sd.names[j] = jn->name ? jn->name : "joint" + std::to_string(j);
+            const cgltf_node* p = jn->parent;
+            while (p) {
+                auto it = jointOf.find(p);
+                if (it != jointOf.end() && it->second.first == (int)si) { sd.parent[j] = it->second.second; break; }
+                p = p->parent;
+            }
+            if (sd.parent[j] < 0 && jn->parent) sd.rootXf[j] = nodeXf(jn->parent);
+            float* r = &sd.rest[j * 10];
+            float t[3] = {0, 0, 0}, q[4] = {0, 0, 0, 1}, sc[3] = {1, 1, 1};
+            if (jn->has_matrix) {  // decompose (no shear): columns = rotation x scale
+                const float* m = jn->matrix;
+                for (int k = 0; k < 3; k++) { t[k] = m[12 + k]; sc[k] = sqrtf(m[k * 4] * m[k * 4] + m[k * 4 + 1] * m[k * 4 + 1] + m[k * 4 + 2] * m[k * 4 + 2]); }
+                float R[3][3];
+                for (int c = 0; c < 3; c++) for (int k = 0; k < 3; k++) R[k][c] = m[c * 4 + k] / std::max(sc[c], 1e-12f);
+                float tr = R[0][0] + R[1][1] + R[2][2];
+                if (tr > 0) { float s4 = sqrtf(tr + 1.f) * 2; q[3] = 0.25f * s4; q[0] = (R[2][1] - R[1][2]) / s4; q[1] = (R[0][2] - R[2][0]) / s4; q[2] = (R[1][0] - R[0][1]) / s4; }
+                else if (R[0][0] > R[1][1] && R[0][0] > R[2][2]) { float s4 = sqrtf(1.f + R[0][0] - R[1][1] - R[2][2]) * 2; q[3] = (R[2][1] - R[1][2]) / s4; q[0] = 0.25f * s4; q[1] = (R[0][1] + R[1][0]) / s4; q[2] = (R[0][2] + R[2][0]) / s4; }
+                else if (R[1][1] > R[2][2]) { float s4 = sqrtf(1.f + R[1][1] - R[0][0] - R[2][2]) * 2; q[3] = (R[0][2] - R[2][0]) / s4; q[0] = (R[0][1] + R[1][0]) / s4; q[1] = 0.25f * s4; q[2] = (R[1][2] + R[2][1]) / s4; }
+                else { float s4 = sqrtf(1.f + R[2][2] - R[0][0] - R[1][1]) * 2; q[3] = (R[1][0] - R[0][1]) / s4; q[0] = (R[0][2] + R[2][0]) / s4; q[1] = (R[1][2] + R[2][1]) / s4; q[2] = 0.25f * s4; }
+            } else {
+                if (jn->has_translation) memcpy(t, jn->translation, 12);
+                if (jn->has_rotation) memcpy(q, jn->rotation, 16);
+                if (jn->has_scale) memcpy(sc, jn->scale, 12);
+            }
+            memcpy(r, t, 12); memcpy(r + 3, q, 16); memcpy(r + 7, sc, 12);
+            if (sk.inverse_bind_matrices) {
+                float m[16];
+                cgltf_accessor_read_float(sk.inverse_bind_matrices, j, m, 16);
+                for (int rr = 0; rr < 3; rr++) for (int c = 0; c < 4; c++) sd.invBind[j].m[rr][c] = m[c * 4 + rr];
+            }
+        }
+        for (size_t j = 0; j < n; j++) for (int p = sd.parent[j]; p >= 0 && depth[j] < (int)n; p = sd.parent[p]) depth[j]++;
+        for (size_t j = 0; j < n; j++) sd.order.push_back((int)j);
+        std::stable_sort(sd.order.begin(), sd.order.end(), [&](int a, int b) { return depth[a] < depth[b]; });
+        out.skins.push_back(std::move(sd));
+    }
+    for (size_t ai = 0; ai < data->animations_count; ai++) {
+        const cgltf_animation& an = data->animations[ai];
+        ClipData cd;
+        cd.name = an.name ? an.name : "clip" + std::to_string(ai);
+        cd.skin = -1;
+        for (size_t c = 0; c < an.channels_count; c++) {
+            const cgltf_animation_channel& ch = an.channels[c];
+            auto it = jointOf.find(ch.target_node);
+            if (it == jointOf.end() || !ch.sampler || !ch.sampler->input || !ch.sampler->output) continue;
+            if (cd.skin < 0) cd.skin = it->second.first;
+            if (it->second.first != cd.skin) continue;
+            int comps = ch.target_path == cgltf_animation_path_type_translation ? 3 : ch.target_path == cgltf_animation_path_type_rotation ? 4
+                      : ch.target_path == cgltf_animation_path_type_scale ? 3 : 0;
+            if (!comps) continue;
+            ClipChannel cc;
+            cc.joint = it->second.second;
+            cc.path = comps == 4 ? 1 : ch.target_path == cgltf_animation_path_type_translation ? 0 : 2;
+            cc.step = ch.sampler->interpolation == cgltf_interpolation_type_step;
+            bool cubic = ch.sampler->interpolation == cgltf_interpolation_type_cubic_spline;  // keep the values, drop the tangents
+            const cgltf_accessor* in = ch.sampler->input;
+            const cgltf_accessor* ov = ch.sampler->output;
+            cc.t.resize(in->count);
+            for (size_t k = 0; k < in->count; k++) cgltf_accessor_read_float(in, k, &cc.t[k], 1);
+            cc.v.resize(in->count * comps);
+            for (size_t k = 0; k < in->count; k++) cgltf_accessor_read_float(ov, cubic ? k * 3 + 1 : k, &cc.v[k * comps], comps);
+            if (!cc.t.empty()) cd.duration = std::max(cd.duration, cc.t.back());
+            cd.ch.push_back(std::move(cc));
+        }
+        if (cd.skin >= 0 && !cd.ch.empty()) out.clips.push_back(std::move(cd));
+    }
+}
+
 bool loadGltf(const std::string& path, ModelData& out, std::string& err) {
     cgltf_options opt{};
     cgltf_data* data = nullptr;
@@ -165,28 +250,49 @@ bool loadGltf(const std::string& path, ModelData& out, std::string& err) {
     uint32_t defaultMat = (uint32_t)out.materials.size();
     { MaterialData dm; dm.color[0] = dm.color[1] = dm.color[2] = 0.7f; out.materials.push_back(dm); }
 
+    // skins (skel.h): a mesh is skinned when a node draws it with a skin
+    std::vector<int> meshSkin(data->meshes_count, -1);
+    for (size_t i = 0; i < data->nodes_count; i++)
+        if (data->nodes[i].mesh && data->nodes[i].skin) meshSkin[data->nodes[i].mesh - data->meshes] = (int)(data->nodes[i].skin - data->skins);
+    loadSkins(data, out);
+
     // meshes: all triangle primitives of a glTF mesh merged into one
     for (size_t mi = 0; mi < data->meshes_count; mi++) {
         const cgltf_mesh& gm = data->meshes[mi];
         MeshData md;
+        md.skin = meshSkin[mi];
+        const bool skinned = md.skin >= 0;
         for (size_t pi = 0; pi < gm.primitives_count; pi++) {
             const cgltf_primitive& p = gm.primitives[pi];
             if (p.type != cgltf_primitive_type_triangles) continue;
-            const cgltf_accessor *pos = nullptr, *nrm = nullptr, *uv = nullptr;
+            const cgltf_accessor *pos = nullptr, *nrm = nullptr, *uv = nullptr, *jnt = nullptr, *wgt = nullptr;
             for (size_t a = 0; a < p.attributes_count; a++) {
                 const auto& at = p.attributes[a];
                 if (at.type == cgltf_attribute_type_position) pos = at.data;
                 else if (at.type == cgltf_attribute_type_normal) nrm = at.data;
                 else if (at.type == cgltf_attribute_type_texcoord && at.index == 0) uv = at.data;
+                else if (at.type == cgltf_attribute_type_joints && at.index == 0) jnt = at.data;
+                else if (at.type == cgltf_attribute_type_weights && at.index == 0) wgt = at.data;
             }
             if (!pos) continue;
             uint32_t base = (uint32_t)(md.verts.size() / 8);
+            if (skinned && md.skinW.size() < (size_t)base * 8) md.skinW.resize((size_t)base * 8, 0.f);  // earlier unskinned primitives
             for (size_t v = 0; v < pos->count; v++) {
                 float f[8] = {0, 0, 0, 0, 0, 0, 0, 0};
                 cgltf_accessor_read_float(pos, v, f, 3);
                 if (nrm) cgltf_accessor_read_float(nrm, v, f + 3, 3);
                 if (uv) cgltf_accessor_read_float(uv, v, f + 6, 2);
                 md.verts.insert(md.verts.end(), f, f + 8);
+                if (!skinned) continue;
+                float w[8] = {1, 0, 0, 0, 0, 0, 0, 0};  // no weights: rigidly on joint 0
+                if (jnt && wgt) {
+                    cgltf_uint j[4] = {};
+                    cgltf_accessor_read_uint(jnt, v, j, 4);
+                    cgltf_accessor_read_float(wgt, v, w, 4);
+                    float sum = w[0] + w[1] + w[2] + w[3];
+                    for (int k = 0; k < 4; k++) { w[k] = sum > 0 ? w[k] / sum : (k == 0); w[4 + k] = (float)j[k]; }
+                }
+                md.skinW.insert(md.skinW.end(), w, w + 8);
             }
             size_t first = md.idx.size();
             if (p.indices)
@@ -213,7 +319,7 @@ bool loadGltf(const std::string& path, ModelData& out, std::string& err) {
                 }
             }
         }
-        optimizeMesh(md);
+        if (!skinned) optimizeMesh(md);  // the weld would need the skin stream remapped too
         for (int j = 0; j < 3; j++) { md.bmin[j] = 1e30f; md.bmax[j] = -1e30f; }
         for (size_t v = 0; v < md.verts.size(); v += 8)
             for (int j = 0; j < 3; j++) {
@@ -272,11 +378,12 @@ bool loadGltf(const std::string& path, ModelData& out, std::string& err) {
         if (n->mesh && out.meshes[n->mesh - data->meshes].idx.size()) {
             InstanceData in;
             in.mesh = (int)(n->mesh - data->meshes);
-            in.xf = x;
+            in.xf = n->skin ? xfIdentity() : x;  // skinned: the joints place it, the node's own transform is ignored (glTF)
             in.collide = extraNum(ex, "collide", 1) != 0;
             if (n->name) in.name = n->name;
             if (ex) in.extras = ex;
             out.meshes[in.mesh].strength = extraNum(ex, "strength", 1.f);
+            if (std::string mt; extraStr(ex, "mat", mt)) out.meshes[in.mesh].breakKind = breakKindOf(mt);
             out.instances.push_back(in);
         }
         if (n->light && n->light->type != cgltf_light_type_directional) {

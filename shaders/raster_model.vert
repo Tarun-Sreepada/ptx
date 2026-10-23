@@ -11,6 +11,7 @@ layout(location = 2) out vec2 oUV;
 layout(location = 3) flat out uint oSlot;
 layout(location = 4) flat out float oFade;  // > 0: tree in the impostor crossfade band
 layout(location = 5) flat out uint oInst;
+layout(location = 6) out vec3 oPrev;  // last frame's position: previous transform + previous vertices (second half of modelXf)
 
 void main() {
     uint b = uint(gl_InstanceIndex) * 4u;
@@ -23,5 +24,9 @@ void main() {
     mat3 m = transpose(mat3(xf));  // linear part, column-major
     oN = transpose(inverse(m)) * v.n;
     oUV = v.uv;
+    uint pb = uint(modelXf.length()) / 2u + b;
+    mat3x4 pxf = mat3x4(modelXf[pb], modelXf[pb + 1u], modelXf[pb + 2u]);
+    uint ps = floatBitsToUint(modelXf[pb + 3u].x);
+    oPrev = vec4(ps == oSlot ? v.p : modelVertex(meshes[ps], uint(gl_VertexIndex)).p, 1.0) * pxf;
     gl_Position = project(oP);
 }

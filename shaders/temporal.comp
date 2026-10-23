@@ -21,14 +21,15 @@ void main() {
     vec3 hc = vec3(0), hm = vec3(0);
     float sw = 0.0;
     vec2 pp;
-    if ((F.settings.z & FLAG_ACCUM) != 0u && prevPixel(P.xyz, pp)) {
+    vec3 Pprev = P.xyz + imageLoad(gVel, p).xyz;  // moving objects: where this point was last frame
+    if ((F.settings.z & FLAG_ACCUM) != 0u && prevPixel(Pprev, pp)) {
         ivec2 b = ivec2(floor(pp));
         vec2 f = pp - vec2(b);
         for (int i = 0; i < 4; i++) {
             ivec2 o = ivec2(i & 1, i >> 1);
             ivec2 q = b + o;
             float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-            if (w > 0.0 && similarPrev(q, P.xyz, n, mat)) {
+            if (w > 0.0 && similarPrev(q, Pprev, n, mat)) {
                 hc += w * imageLoad(histColor, q).rgb;
                 hm += w * imageLoad(histMoments, q).xyz;
                 sw += w;

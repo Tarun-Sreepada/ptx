@@ -9,9 +9,11 @@ layout(location = 1) out vec3 oN;
 layout(location = 2) flat out uint oMat;
 layout(location = 3) out float oT;
 layout(location = 4) flat out uint oBlade;
+layout(location = 5) out vec3 oPrev;  // last frame's position (motion vectors)
 
 void main() {
     oP = inPos;
+    oPrev = inPos;
     oN = inNrm;
     oMat = 0u;
     oT = 0.0;

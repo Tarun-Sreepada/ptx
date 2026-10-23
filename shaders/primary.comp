@@ -13,6 +13,7 @@ void main() {
     vec3 o = F.camPos.xyz;
     vec3 d = cameraRay(p);
     bool raster = pc.a == 1u;
+    if (!raster && inScreen(p)) imageStore(gVel, p, vec4(0));  // traced primary: camera motion only
 
     Hit h;
     if (raster) {

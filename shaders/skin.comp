@@ -1,0 +1,43 @@
+#version 460
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+// Linear blend skinning of a character mesh into its own vertex buffer (pos3 nrm3 uv2, the model layout), which
+// the BLAS refit and the raster / ray shaders then read like any mesh. Mesh slots (model.glsl MeshInfo):
+//   pc.a = destination slot: vtx = the skinned vertices
+//   pc.b = source slot:      vtx = bind-pose vertices, idx = 4 weights + 4 joint indices per vertex (floats),
+//                            mat = skinning matrices (3x4 rows, 12 floats per joint)
+// pc.c = vertex count
+layout(local_size_x = 64) in;
+layout(push_constant) uniform PC { uint a, b, c, d; } pc;
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer FloatBuf { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer FloatOut { float v[]; };
+struct MeshInfo { uvec2 vtx; uvec2 idx; uvec2 mat; uvec2 pad; };
+layout(binding = 33, std430) readonly buffer Meshes { MeshInfo meshes[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.c) return;
+    MeshInfo src = meshes[pc.b];
+    FloatBuf vb = FloatBuf(src.vtx), wb = FloatBuf(src.idx), mb = FloatBuf(src.mat);
+    uint o = i * 8u;
+    vec4 p = vec4(vb.v[o], vb.v[o + 1u], vb.v[o + 2u], 1.0);
+    vec3 n = vec3(vb.v[o + 3u], vb.v[o + 4u], vb.v[o + 5u]);
+    vec3 sp = vec3(0.0), sn = vec3(0.0);
+    for (uint k = 0u; k < 4u; k++) {
+        float w = wb.v[o + k];
+        if (w <= 0.0) continue;
+        uint m = uint(wb.v[o + 4u + k]) * 12u;
+        mat3x4 M = mat3x4(vec4(mb.v[m], mb.v[m + 1u], mb.v[m + 2u], mb.v[m + 3u]),
+                          vec4(mb.v[m + 4u], mb.v[m + 5u], mb.v[m + 6u], mb.v[m + 7u]),
+                          vec4(mb.v[m + 8u], mb.v[m + 9u], mb.v[m + 10u], mb.v[m + 11u]));  // rows
+        sp += w * (p * M);
+        sn += w * (vec4(n, 0.0) * M);  // rigid / uniformly scaled joints: the linear part is fine for normals
+    }
+    float l = length(sn);
+    sn = l > 1e-12 ? sn / l : n;
+    FloatOut d = FloatOut(meshes[pc.a].vtx);
+    d.v[o] = sp.x; d.v[o + 1u] = sp.y; d.v[o + 2u] = sp.z;
+    d.v[o + 3u] = sn.x; d.v[o + 4u] = sn.y; d.v[o + 5u] = sn.z;
+    d.v[o + 6u] = vb.v[o + 6u]; d.v[o + 7u] = vb.v[o + 7u];
+}

@@ -51,6 +51,9 @@ FetchContent_Declare(entt
   GIT_REPOSITORY https://github.com/skypjack/entt.git
   GIT_TAG v4.0.0
   GIT_SHALLOW TRUE)
+FetchContent_Declare(bc7enc
+  GIT_REPOSITORY https://github.com/richgel999/bc7enc_rdo.git
+  GIT_TAG b9438627eef73a1157e84201b6fa6eb2ffd6d9f0)
 FetchContent_Declare(enkits
   GIT_REPOSITORY https://github.com/dougbinks/enkiTS.git
   GIT_TAG v1.12
@@ -104,6 +107,7 @@ FetchContent_MakeAvailable(imgui cgltf stb JoltPhysics tracy meshoptimizer enkit
 FetchContent_Populate(vma)  # header-only; populate avoids its install/sample targets
 FetchContent_Populate(entt)
 FetchContent_Populate(miniaudio)
+FetchContent_Populate(bc7enc)  # only its BC7 block encoder is built (below)
 FetchContent_Populate(steamaudio)
 set(PHONON_ROOT ${steamaudio_SOURCE_DIR})
 if(EXISTS ${steamaudio_SOURCE_DIR}/steamaudio)
@@ -121,6 +125,10 @@ add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui_widgets.cpp
   ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
   ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+add_library(bc7enc STATIC ${bc7enc_SOURCE_DIR}/bc7enc.cpp)
+target_include_directories(bc7enc PUBLIC ${bc7enc_SOURCE_DIR})
+target_compile_options(bc7enc PRIVATE -O3 ${PTX_ARCH})
+
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
 
@@ -142,11 +150,11 @@ foreach(s ${SHADERS})
 endforeach()
 add_custom_target(shaders ALL DEPENDS ${SPV_FILES})
 
-add_executable(ptx src/main.cpp src/gltf_load.cpp src/physics.cpp src/stream.cpp src/gpu_alloc.cpp src/input.cpp src/audio.cpp src/jobs.cpp src/rendergraph.cpp src/dlss.cpp src/trees.cpp src/fracture.cpp src/gltf_write.cpp src/matlib.cpp src/editor.cpp src/texgen.cpp src/lighttree.cpp src/prof.cpp src/worldmap.cpp)
+add_executable(ptx src/main.cpp src/gltf_load.cpp src/physics.cpp src/stream.cpp src/gpu_alloc.cpp src/input.cpp src/audio.cpp src/jobs.cpp src/rendergraph.cpp src/dlss.cpp src/trees.cpp src/fracture.cpp src/gltf_write.cpp src/matlib.cpp src/editor.cpp src/texgen.cpp src/lighttree.cpp src/prof.cpp src/worldmap.cpp src/texcomp.cpp src/skel.cpp src/character.cpp)
 target_include_directories(ptx PRIVATE ${cgltf_SOURCE_DIR} ${stb_SOURCE_DIR} ${vma_SOURCE_DIR}/include ${entt_SOURCE_DIR}/src ${miniaudio_SOURCE_DIR})
 target_compile_options(ptx PRIVATE ${PTX_ARCH})
 target_compile_options(Jolt PRIVATE ${PTX_ARCH})
-target_link_libraries(ptx PRIVATE imgui Jolt Tracy::TracyClient meshoptimizer enkiTS SDL3::SDL3 phonon)
+target_link_libraries(ptx PRIVATE bc7enc imgui Jolt Tracy::TracyClient meshoptimizer enkiTS SDL3::SDL3 phonon)
 set_target_properties(ptx PROPERTIES BUILD_RPATH ${PHONON_ROOT}/lib/linux-x64)
 target_compile_definitions(ptx PRIVATE SHADER_DIR="${SHADER_OUT}/" WORLD_DIR="${CMAKE_SOURCE_DIR}/world/")
 # NVTX (header-only) for Nsight Systems ranges: the CUDA toolkit's copy, else NVIDIA's repo

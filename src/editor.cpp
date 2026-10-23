@@ -35,7 +35,8 @@ constexpr float DEG = 3.14159265f / 180.f;
 enum Kind { K_PRIM, K_MESH, K_ASSET, K_LIGHT, K_VOLUME, K_ZONE, K_TREE, K_ROCK, K_COUNT };
 const char* KIND_NAME[K_COUNT] = {"Primitive", "Mesh", "Asset", "Light", "Bake volume", "Flatten zone", "Tree", "Rock"};
 enum Shape { BOX, CYLINDER };
-const char* TREE_NAME[trees::VARIANTS] = {"Broadleaf A", "Broadleaf B", "Conifer A", "Conifer B"};
+const char* TREE_NAME[trees::VARIANTS] = {"Species A, seed 1", "Species A, seed 2", "Species B, seed 1", "Species B, seed 2",
+                                          "Species C, seed 1", "Species C, seed 2", "Species D, seed 1", "Species D, seed 2"};
 
 // Everything in a cell as one editable list. Transforms are position + Euler angles (degrees, applied
 // yaw * pitch * roll) + scale; primitives keep their size in the mesh (scale 1).
@@ -213,6 +214,7 @@ void genPrim(const Item& it, uint32_t mat, MeshData& m) {
     for (size_t i = 0; i < m.verts.size(); i += 8)
         for (int k = 0; k < 3; k++) { m.bmin[k] = std::min(m.bmin[k], m.verts[i + k]); m.bmax[k] = std::max(m.bmax[k], m.verts[i + k]); }
     m.strength = it.strength;
+    m.breakKind = breakKindOf(it.mat);
 }
 
 std::string fmt(const char* f, ...) {

@@ -19,6 +19,7 @@ layout(location = 3) out vec4 outEmis;
 layout(location = 4) out vec4 outMat;
 layout(location = 5) out vec4 outMat2;
 layout(location = 6) out vec4 outTan;
+layout(location = 7) out vec4 outVel;
 
 void main() {
     uint b = oInst * 3u;
@@ -75,4 +76,5 @@ void main() {
     outMat2 = vec4(0.0);
     vec3 t = abs(n.y) < 0.99 ? cross(vec3(0, 1, 0), n) : cross(vec3(1, 0, 0), n);
     outTan = vec4(normalize(t), -0.45);  // tree canopies: translucent leaves
+    outVel = vec4(0);  // impostors are of standing trees
 }
