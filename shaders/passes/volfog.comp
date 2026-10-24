@@ -1,0 +1,123 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// Volumetric fog at half resolution: the camera ray is marched through height fog (+ drifting noise, fog banks
+// and dust clouds from impacts) up to the first surface. Every step takes a shadow ray to the sun, so tree trunks, canopies,
+// buildings and clouds cut light shafts (god rays) into it; one light from the light list is added at a random
+// step, so lamps glow in the mist. Blended with the reprojected previous result to hide the step jitter.
+// Out: rgb = in-scattered light, a = transmittance (composite: colour * a + rgb).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int STEPS = 16;
+const float BANK_RANGE = 500.0;  // m: how far fog banks are marched (they're seen from afar)
+
+// Fog banks: patches of low ground fog (radiation fog in the hollows, mist along the river) drifting with the wind,
+// thickest at the ground and thinning to nothing at a top that rises and falls across the bank, with wispy edges.
+// fogBank: density (1/m), patch scale (m), top (m above the ground), coverage; fogBank2: drift xy, wisp detail, on.
+float bankDensity(vec3 p) {
+    if (F.fogBank2.w < 0.5) return 0.0;
+    vec2 q = (p.xz + F.fogBank2.xy) / F.fogBank.y;
+    float n = vnoise(q) * 0.6 + vnoise(q * 2.3 + 7.1) * 0.3 + vnoise(q * 5.1 - 3.7) * 0.1;
+    float cover = F.fogBank.w;
+    float mask = smoothstep(1.0 - cover - 0.08, 1.0 - cover + 0.18, n);
+    if (mask <= 0.0) return 0.0;
+    float top = F.fogBank.z * (0.5 + n);
+    float h = p.y - groundBase(p.xz);
+    if (h > top) return 0.0;
+    float wisp = vnoise((p.xz + F.fogBank2.xy * 1.3) / 18.0 + vec2(p.y * 0.05, 0.0)) * 0.7 + vnoise((p.xz - F.fogBank2.xy * 0.7) / 6.0) * 0.3;
+    float detail = mix(1.0, 0.3 + 1.4 * wisp, clamp(F.fogBank2.z, 0.0, 1.0));
+    float vertical = 1.0 - smoothstep(0.0, top, max(h, 0.0));
+    return F.fogBank.x * mask * vertical * detail;
+}
+
+float hg(float c, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
+}
+
+float fogDensity(vec3 p, float t) {
+    float h = max(p.y, 0.0);
+    float d = F.fog0.x * exp(-h * F.fog0.y) + bankDensity(p);
+    if (F.fog1.z > 0.0) {  // drifting patches, carried by the wind
+        vec2 q = p.xz * 0.045 - F.wind.xy * F.wind.w * t * 0.25;
+        float n = vnoise(q) * 0.65 + vnoise(q * 2.7 + p.y * 0.3) * 0.35;
+        d *= max(1.0 + F.fog1.z * (n * 2.0 - 1.0), 0.0);
+    }
+    for (uint i = 0u; i < F.fxInfo.x; i++) {  // dust: grows and settles as it ages
+        vec4 a = F.dust[2u * i], b = F.dust[2u * i + 1u];
+        float age = b.y;
+        vec3 c = a.xyz + vec3(0, b.z * age, 0);
+        float R = a.w * (1.0 + 0.9 * sqrt(age));
+        vec3 dv = p - c;
+        float r2 = dot(dv, dv);
+        if (r2 > 9.0 * R * R) continue;
+        d += b.x * exp(-r2 / (R * R)) * exp(-age * 0.35) / (1.0 + age);
+    }
+    return d;
+}
+
+void main() {
+    ivec2 hp = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 hs = F.fogRes.yz;
+    int div = F.fogRes.x;
+    if (any(greaterThanEqual(hp, hs))) return;
+    bool banks = F.fogBank2.w > 0.5;
+    if (F.fog0.w < 0.5 && !banks) { imageStore(fogImg, hp, vec4(0, 0, 0, 1)); return; }
+    ivec2 fp = min(hp * div + div / 2, ivec2(F.res.xy) - 1);
+    float depth = imageLoad(gDepth, fp).r;
+    vec3 o = F.camPos.xyz, d = cameraRay(fp);
+    float maxD = banks ? max(F.fog1.y, BANK_RANGE) : F.fog1.y;
+    float tEnd = depth < 0.0 ? maxD : min(depth, maxD);
+    float dt = tEnd / float(STEPS);
+    float jit = bn(fp, 12u);
+    uint s = seedFor(fp, 13u);
+    float time = F.camPos.w;
+
+    vec3 sun = F.sunColor.rgb;
+    bool sunOn = sun.r + sun.g + sun.b > 0.0;
+    float phSun = hg(dot(d, F.sunDir.xyz), F.fog0.z);
+    vec3 amb = sky(vec3(0, 1, 0)) * 0.6 + sky(normalize(vec3(d.x, 0.15, d.z))) * 0.4;  // isotropic sky light
+    // one light from the list, evaluated at one random step (estimator x STEPS)
+    float pl;
+    uint li = F.fog1.x > 0.5 ? sampleLightAlias(bn(fp, 14u), pl) : NO_LIGHT;
+    int kl = min(int(bn(fp, 15u) * float(STEPS)), STEPS - 1);
+    LightPoint lp;
+    if (li != NO_LIGHT) lp = lightPoint(packLight(li, bn2(fp, 16u)));
+
+    vec3 Lin = vec3(0);
+    float T = 1.0;
+    for (int i = 0; i < STEPS; i++) {
+        float t = (float(i) + jit) * dt;
+        vec3 p = o + d * t;
+        float sig = fogDensity(p, time);
+        if (sig <= 1e-7) continue;
+        vec3 S = amb;
+        if (sunOn && visible(p, F.sunDir.xyz, 1e4)) S += sun * cloudShadow(p) * phSun;
+        if (i == kl && li != NO_LIGHT && pl > 0.0) {
+            vec3 wi;
+            float dist;
+            vec3 Li = lightIncident(lp, p, wi, dist);
+            if (visible(p, wi, shadowLength(lp, dist))) {
+                vec3 Ll = Li * (float(STEPS) / (4.0 * PI * lightSourcePdf(pl, lp)));
+                float lim = 2.0 * lum(amb) + 0.05;  // one-sample estimate: clip the rare spikes next to a light
+                S += Ll * min(1.0, lim / max(lum(Ll), 1e-6));
+            }
+        }
+        float a = exp(-sig * dt);
+        Lin += T * S * (1.0 - a);  // = T * S * sig * integral of exp(-sig x) over the step / sig
+        T *= a;
+    }
+    vec4 cur = vec4(Lin, T);
+
+    // temporal: blend with last frame's fog for (roughly) the same world point
+    vec3 ref = o + d * min(tEnd, 40.0);
+    vec2 pp;
+    float alpha = 1.0;
+    vec4 hist = cur;
+    if (prevPixel(ref, pp)) {
+        ivec2 q = ivec2(floor(pp / float(div)));
+        if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, hs))) { hist = imageLoad(fogHist, q); alpha = F.fog1.w; }
+    }
+    imageStore(fogImg, hp, mix(hist, cur, alpha));
+}

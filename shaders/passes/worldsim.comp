@@ -1,0 +1,126 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// World simulation on the world map grid (2 m cells), in a window around the camera (pc.b, pc.c = first cell,
+// 1024 x 1024 cells): snow that falls above the snow line and piles up, slides when piled steeper than its angle
+// of repose (an avalanche keeps moving on gentler slopes once it runs, and entrains what it crosses), melts below
+// the line into water, which runs downhill, is pulled toward the river when one is within range, drains into it,
+// or soaks in (wet ground) and dries.
+//   pc.a = 0: ground cache   1: fluxes out of each cell   2: apply fluxes, fall, melt, drain, brush
+// simImg: x snow depth (m), y water depth (m), z wetness 0..1, w avalanche activity 0..1
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 94, rgba16f) uniform image2D fluxW;  // water out to +x, -x, +z, -z (m per step)
+layout(binding = 95, rgba16f) uniform image2D fluxS;  // snow out, same order
+layout(binding = 96, r32f) uniform image2D simGround; // ground height (m), the snow-free floor
+
+const ivec2 DIRS[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+
+vec2 cellPos(ivec2 c) { return F.mapP.x + (vec2(c) + 0.5) * F.mapP.y; }
+bool inGrid(ivec2 c) { int n = int(F.mapP.z); return c.x >= 0 && c.y >= 0 && c.x < n && c.y < n; }
+vec4 S(ivec2 c) { return inGrid(c) ? imageLoad(simImg, c) : vec4(0); }
+float G(ivec2 c) { return inGrid(c) ? imageLoad(simGround, c).r : 1e4; }  // outside: a wall (nothing leaves the grid)
+
+// how far the nearest river water is (analytic river: across-flow distance past its edge; drawn rivers: here or not)
+float riverDist(vec2 p, float g) {
+    float d = 1e4;
+    if (F.river.x > 0.0 && riverNear(p, F.sim0.w)) { vec4 r = riverInfo(p); d = max(abs(r.x) - r.y, 0.0); }
+    vec4 mw = mapWaterAt(p);
+    if (mw.x > g - 0.05) d = 0.0;
+    return d;
+}
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy) + ivec2(pc.b, pc.c);
+    if (!inGrid(c)) return;
+    vec2 p = cellPos(c);
+    float cell = F.mapP.y, dt = F.sim1.z;
+
+    if (pc.a == 0u) {
+        imageStore(simGround, c, vec4(groundHeight(p)));
+        return;
+    }
+
+    vec4 s = imageLoad(simImg, c);
+    float g = imageLoad(simGround, c).r;
+
+    if (pc.a == 1u) {
+        // snow: piled steeper than the repose angle slides; running snow (activity) keeps going on gentler slopes
+        float repose = F.sim1.x * (1.0 - 0.55 * s.w) * cell;
+        vec4 fs = vec4(0), fw = vec4(0);
+        float hs = g + s.x, hw = g + s.y;
+        float rd = F.sim0.w > 0.0 ? riverDist(p, g) : 1e4;
+        for (int k = 0; k < 4; k++) {
+            ivec2 q = c + DIRS[k];
+            vec4 sq = S(q);
+            float gq = G(q);
+            float drop = hs - (gq + sq.x);
+            if (drop > repose && s.x > 0.001) fs[k] = (drop - repose) * 0.2 * F.sim1.y * (1.0 + 3.0 * s.w);
+            // water: down the water surface, plus a pull toward the river when it's within range
+            float bias = 0.0;
+            if (rd < F.sim0.w) bias = 0.02 * (rd - riverDist(cellPos(q), gq));
+            float dw = hw - (gq + sq.y) + bias;
+            if (dw > 0.0 && s.y > 1e-5) fw[k] = dw * 0.22 * F.sim2.z;
+        }
+        float ts = fs.x + fs.y + fs.z + fs.w, tw = fw.x + fw.y + fw.z + fw.w;
+        if (ts > s.x * 0.5) fs *= s.x * 0.5 / ts;  // never more than half the pile in one step
+        if (tw > s.y * 0.9) fw *= s.y * 0.9 / tw;
+        imageStore(fluxS, c, fs);
+        imageStore(fluxW, c, fw);
+        return;
+    }
+
+    // ---- pc.a == 2: apply
+    vec4 fsOut = imageLoad(fluxS, c), fwOut = imageLoad(fluxW, c);
+    float snowIn = 0.0, waterIn = 0.0, actIn = 0.0;
+    for (int k = 0; k < 4; k++) {
+        ivec2 q = c + DIRS[k];
+        if (!inGrid(q)) continue;
+        int back = k ^ 1;  // the neighbour's flux toward this cell
+        float si = imageLoad(fluxS, q)[back];
+        snowIn += si;
+        waterIn += imageLoad(fluxW, q)[back];
+        if (si > 0.0) actIn = max(actIn, imageLoad(simImg, q).w);
+    }
+    float sOut = fsOut.x + fsOut.y + fsOut.z + fsOut.w, wOut = fwOut.x + fwOut.y + fwOut.z + fwOut.w;
+    s.x += snowIn - sOut;
+    s.y += waterIn - wOut;
+    // avalanche activity: what's moving through the cell relative to what's there, carried along with the snow
+    float moving = (snowIn + sOut) / max(s.x, 0.05);
+    s.w = clamp(max(s.w * exp(-1.5 * dt), max(actIn * 0.97 * step(1e-4, snowIn), moving * 4.0)), 0.0, 1.0);
+
+    float h = g + s.x;
+    float precip = F.sim0.y;
+    if (h > F.sim0.x - 30.0) {
+        // above the line it snows (thinning out over 30 m below it)
+        s.x += precip * F.sim2.x * dt * smoothstep(F.sim0.x - 30.0, F.sim0.x, h);
+    }
+    if (h < F.sim0.x) {
+        // melting, faster further below the line; moving snow melts a little from the friction
+        float melt = (F.sim0.z * clamp((F.sim0.x - h) / 150.0 + 0.05, 0.0, 1.0) + 0.002 * s.w) * dt;
+        melt = min(melt, s.x);
+        s.x -= melt;
+        s.y += melt * 0.45;  // snow is ~45 % water by depth here (settled)
+        s.y += precip * 1.2e-5 * dt;  // rain on the ground: what doesn't soak in at once runs off (~45 mm/h at full)
+    }
+    // drawn / analytic river water under the cell: melt water joins it, snow there melts into it
+    vec4 mw = mapWaterAt(p);
+    bool river = mw.x > g;
+    if (!river && F.river.x > 0.0 && riverNear(p, 1.0)) { vec4 r = riverInfo(p); river = abs(r.x) < r.y && r.w > g; }
+    if (river) { s.y = 0.0; s.x = max(s.x - 0.05 * dt, 0.0); }
+    // soaking in: standing water wets the ground, the ground dries slowly; rain wets everything below the line
+    // soaking in: fast into dry soil, slowing as it saturates, so a long rain starts to run off and collect
+    float soak = min(s.y, 1.5e-5 * (1.0 - 0.85 * s.z) * dt);
+    s.y -= soak;
+    // rain alone wets the ground only partly (a sheen); standing water (runoff collected in a dip) soaks it fully
+    float wetTarget = max(smoothstep(0.0, 0.004, s.y), h < F.sim0.x ? 0.55 * precip : 0.0);
+    s.z = wetTarget > s.z ? mix(s.z, wetTarget, min(dt * 2.0, 1.0)) : s.z * exp(-F.sim2.y * dt);
+    // the snow brush (editor): F.simBrush = x, z, radius, metres per second
+    if (F.simBrush.z > 0.0) {
+        float d = length(p - F.simBrush.xy) / F.simBrush.z;
+        if (d < 1.0) s.x = max(s.x + F.simBrush.w * dt * (1.0 - d * d), 0.0);
+    }
+    s.x = clamp(s.x, 0.0, 400.0);
+    s.y = clamp(s.y, 0.0, 20.0);
+    imageStore(simImg, c, s);
+}

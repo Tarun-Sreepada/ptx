@@ -1,0 +1,35 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+#include "scene/impostor.glsl"
+
+// Bakes the impostor atlas once at startup by ray tracing the real tree meshes. The TLAS then holds only the
+// variants, variant v at offset (0, -5000 - 100 v, 0) (impInst[2v]: (offset, -), impInst[2v+1]: (C, R)).
+// Dispatch: IMP_ATLAS^2 x VARIANTS.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 47, rgba8) uniform writeonly image2DArray impAlbedoW;
+layout(binding = 48, rgba16f) uniform writeonly image2DArray impNormalW;
+
+void main() {
+    ivec3 g = ivec3(gl_GlobalInvocationID);
+    if (g.x >= IMP_ATLAS || g.y >= IMP_ATLAS) return;
+    vec3 off = impInst[2 * g.z].xyz;
+    vec4 b = impInst[2 * g.z + 1];
+    vec3 C = b.xyz;
+    float R = b.w;
+    ivec2 f = g.xy / IMP_RES;
+    vec2 s = (vec2(g.xy % IMP_RES) + 0.5) / float(IMP_RES) * 2.0 - 1.0;
+    s.y = -s.y;
+    vec3 d = impDir(f), r, u;
+    impBasis(d, r, u);
+    vec3 o = off + C + d * (2.0 * R) + (r * s.x + u * s.y) * R;
+    Hit h = traceClosest(o, -d, 4.0 * R, vec2(0.0));
+    if (!h.hit) {
+        imageStore(impAlbedoW, g, vec4(0));
+        imageStore(impNormalW, g, vec4(0, 1, 0, 0));
+        return;
+    }
+    vec3 n = h.n;  // traceClosest flips it toward the ray, i.e. toward the frame's viewer
+    imageStore(impAlbedoW, g, vec4(sqrt(h.albedo), 1));
+    imageStore(impNormalW, g, vec4(n, (h.t - 2.0 * R) / R));
+}

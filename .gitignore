@@ -9,3 +9,12 @@ imgui.ini
 world/bake/
 *.bak
 *.bak-*
+compile_commands.json
+.cache/
+settings.ini
+settings.ini.tmp
+*.movelog
+scratch_*.txt
+.vscode/
+.idea/
+*.swp

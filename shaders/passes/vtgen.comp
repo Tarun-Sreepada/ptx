@@ -1,0 +1,41 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Fills ground virtual texture tiles (groundvt.glsl) with the layered material (groundgen.glsl). One dispatch
+// handles a list of 64 x 64 texel tiles; each 16 x 16 workgroup does a quarter-row block, evaluating an extra
+// one-texel apron so the slope comes from central differences of the height field at this level's texel size.
+#include "core/frame.glsl"
+#include "terrain/terrain.glsl"
+#include "terrain/groundgen.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(push_constant) uniform PC { uint count, version, pad0, pad1; } pc;
+struct VtTile { uint level, slot; int tx, tz; };  // slot: x | z << 8 within the level
+layout(binding = 102, std430) readonly buffer VtTiles { VtTile tiles[]; };
+layout(binding = 103, rgba8) uniform writeonly image2DArray vtOutA;  // rgb sqrt(rel / 2), a stone
+layout(binding = 104, rgba8) uniform writeonly image2DArray vtOutB;  // slope x, z (compressed), roughness, AO
+layout(binding = 105, r16) uniform writeonly image2DArray vtOutH;    // height: 0.5 + h / 0.5 m
+
+shared float sh[18][18];
+
+void main() {
+    VtTile T = tiles[gl_WorkGroupID.y];
+    uvec2 blk = uvec2(gl_WorkGroupID.x & 3u, gl_WorkGroupID.x >> 2u);
+    float t = F.vtP.x * exp2(float(T.level));
+    ivec2 base = ivec2(T.tx, T.tz) * 64 + ivec2(blk) * 16 - 1;  // world texel index of the apron's corner
+    ivec2 l = ivec2(gl_LocalInvocationID.xy) + 1;
+    GroundGen mine = groundGen((dvec2(base + l) + 0.5LF) * double(t), t, F.fractal.z, F.ground2.x);
+    sh[l.y][l.x] = mine.h;
+    uint li = gl_LocalInvocationIndex;
+    if (li < 68u) {  // the apron ring: 18 top, 18 bottom, 16 left, 16 right
+        ivec2 c = li < 18u ? ivec2(li, 0) : li < 36u ? ivec2(li - 18u, 17) : li < 52u ? ivec2(0, li - 35u) : ivec2(17, li - 51u);
+        sh[c.y][c.x] = groundGen((dvec2(base + c) + 0.5LF) * double(t), t, F.fractal.z, F.ground2.x).h;
+    }
+    barrier();
+    vec2 s = vec2(sh[l.y][l.x + 1] - sh[l.y][l.x - 1], sh[l.y + 1][l.x] - sh[l.y - 1][l.x]) / (2.0 * t);
+    vec2 se = s / (1.0 + abs(s)) * 0.5 + 0.5;
+    ivec2 wt = base + l;  // world texel
+    ivec3 dst = ivec3(wt & 1023, int(T.level));
+    imageStore(vtOutA, dst, vec4(sqrt(clamp(mine.rel * 0.5, 0.0, 1.0)), mine.stone));
+    imageStore(vtOutB, dst, vec4(se, mine.rough, mine.ao));
+    imageStore(vtOutH, dst, vec4(clamp(0.5 + sh[l.y][l.x] * 2.0, 0.0, 1.0)));
+}

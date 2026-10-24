@@ -1,0 +1,74 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// Terrain mesh: a geometry clipmap (Losasso & Hoppe 2004). Level k is a grid of N x N cells of spacing s0 * 2^k,
+// centred on the camera snapped to twice its spacing, so every vertex sits on a fixed world position: craters,
+// banks and hills keep their shape while the camera moves (the old camera-centred grid slid its vertices over them).
+// The cells of a level that the next finer level covers become degenerate triangles; in the outer band of each level
+// the heights blend towards what the next coarser level has there, reaching it exactly on the border, so neighbouring
+// levels meet without cracks and nothing pops when a level recentres. Vertices and indices are written here;
+// the BLAS is rebuilt after (render/graph_scene.cpp).
+layout(local_size_x = 64) in;
+
+const uint N = 128u;  // cells per level side (core/limits.h TERRAIN_GRID)
+
+// level k's grid origin in units of the finest spacing (integers: the hole test below is exact)
+ivec2 levelOrigin(uint k) {
+    float s = F.terrainP.z * exp2(float(k));
+    ivec2 centre = ivec2(floor(F.terrainP.xy / (2.0 * s) + 0.5)) * int(2u << k);  // snapped to 2 s, in s0 units
+    return centre - int(N / 2u) * int(1u << k);
+}
+vec2 vertexXZ(uint k, ivec2 ij) { return vec2(levelOrigin(k) + ij * int(1u << k)) * F.terrainP.z; }
+
+void main() {
+    uint id = gl_GlobalInvocationID.x, levels = uint(F.terrain2.x);
+    const uint VPL = (N + 1u) * (N + 1u);
+    uint k = id / VPL;
+    if (k >= levels) return;
+    uint local = id % VPL;
+    ivec2 ij = ivec2(local % (N + 1u), local / (N + 1u));
+    float s = F.terrainP.z * exp2(float(k));
+    vec2 xz = vertexXZ(k, ij);
+    float h = terrainHeight(xz);
+
+    // outer band: blend towards the next coarser level's surface (its triangles: diagonal from (+1, -1) to (-1, +1))
+    if (k + 1u < levels) {
+        float band = max(F.terrain2.z, 1.0);
+        int dc = max(abs(ij.x - int(N / 2u)), abs(ij.y - int(N / 2u)));
+        float alpha = clamp((float(dc) - (float(N / 2u) - band)) / band, 0.0, 1.0);
+        bool ox = (ij.x & 1) != 0, oz = (ij.y & 1) != 0;
+        if (alpha > 0.0 && (ox || oz)) {
+            vec2 a, b;
+            if (ox && oz) { a = vec2(s, -s); b = vec2(-s, s); }
+            else if (ox) { a = vec2(-s, 0); b = vec2(s, 0); }
+            else { a = vec2(0, -s); b = vec2(0, s); }
+            float coarse = 0.5 * (terrainHeight(xz + a) + terrainHeight(xz + b));
+            h = mix(h, coarse, alpha);
+        }
+    }
+    // shading normal from the true surface (the same at a point whatever level draws it: no seams between levels)
+    float e = max(0.12, 0.5 * s);
+    vec3 n = normalize(vec3(terrainHeight(xz - vec2(e, 0)) - terrainHeight(xz + vec2(e, 0)), 2.0 * e,
+                            terrainHeight(xz - vec2(0, e)) - terrainHeight(xz + vec2(0, e))));
+    uint v = id * 6u;
+    tv[v] = xz.x; tv[v + 1u] = h; tv[v + 2u] = xz.y;
+    tv[v + 3u] = n.x; tv[v + 4u] = n.y; tv[v + 5u] = n.z;
+
+    // the cell to the +x / +z of this vertex: two triangles, or a degenerate one where the finer level covers it
+    if (ij.x >= int(N) || ij.y >= int(N)) return;
+    uint cell = (k * N + uint(ij.y)) * N + uint(ij.x), i0 = cell * 6u;
+    uint v00 = id, v10 = id + 1u, v01 = id + N + 1u, v11 = v01 + 1u;
+    bool covered = false;
+    if (k > 0u) {
+        ivec2 fo = levelOrigin(k - 1u), lo = levelOrigin(k) + ij * int(1u << k), hi = lo + int(1u << k);
+        int fine = int(N) * int(1u << (k - 1u));
+        covered = all(greaterThanEqual(lo, fo)) && all(lessThanEqual(hi, fo + fine));
+    }
+    if (covered) {
+        for (uint q = 0u; q < 6u; q++) ti[i0 + q] = v00;
+        return;
+    }
+    ti[i0] = v00; ti[i0 + 1u] = v01; ti[i0 + 2u] = v10;
+    ti[i0 + 3u] = v10; ti[i0 + 4u] = v01; ti[i0 + 5u] = v11;
+}

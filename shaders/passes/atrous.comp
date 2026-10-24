@@ -1,0 +1,62 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// Edge-aware a-trous wavelet filter, variance guided.
+// pc.a = step, pc.b = src (0 accum, 1 pingA, 2 pingB), pc.c = dst (1 pingA, 2 pingB), pc.d = 1 -> also write history
+layout(local_size_x = 8, local_size_y = 8) in;
+
+vec4 src(ivec2 q) {
+    if (pc.b == 0u) return imageLoad(accumColor, q);
+    if (pc.b == 1u) return imageLoad(pingA, q);
+    return imageLoad(pingB, q);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    vec4 P = loadPos(p);
+    vec4 outv = vec4(0);
+    if (P.w >= 0.0) {
+        vec4 N4 = imageLoad(gNorm, p);
+        vec3 n = N4.xyz;
+        uint mat = uint(N4.w + 0.5);
+        vec4 cp = src(p);
+        float lp = lum(cp.rgb);
+
+        float var = 0.0;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                float w = (dx == 0 && dy == 0) ? 0.25 : ((dx == 0 || dy == 0) ? 0.125 : 0.0625);
+                var += w * src(clamp(p + ivec2(dx, dy), ivec2(0), ivec2(F.res.xy) - 1)).a;
+            }
+        float sigL = 4.0 * sqrt(max(var, 0.0)) + 1e-4;
+        float nPow = mat == MAT_GRASS ? 4.0 : 64.0;
+        const float k[3] = float[](0.375, 0.25, 0.0625);
+        int step = int(pc.a);
+
+        vec3 sum = vec3(0);
+        float vsum = 0.0, wsum = 0.0;
+        for (int dy = -2; dy <= 2; dy++)
+            for (int dx = -2; dx <= 2; dx++) {
+                ivec2 q = p + ivec2(dx, dy) * step;
+                if (!inScreen(q)) continue;
+                vec4 qP = loadPos(q);
+                if (qP.w < 0.0) continue;
+                vec4 qN = imageLoad(gNorm, q);
+                if (uint(qN.w + 0.5) != mat) continue;
+                vec4 cq = src(q);
+                float wz = exp(-abs(dot(qP.xyz - P.xyz, n)) / (0.005 * P.w + 0.01));
+                float wn = pow(max(dot(n, qN.xyz), 0.0), nPow);
+                float wl = exp(-abs(lp - lum(cq.rgb)) / sigL);
+                float w = k[abs(dx)] * k[abs(dy)] * wz * wn * wl;
+                if (dx == 0 && dy == 0) w = k[0] * k[0];
+                sum += w * cq.rgb;
+                vsum += w * w * cq.a;
+                wsum += w;
+            }
+        outv = vec4(sum / wsum, vsum / (wsum * wsum));
+    }
+    if (pc.c == 1u) imageStore(pingA, p, outv); else imageStore(pingB, p, outv);
+    if (pc.d == 1u) imageStore(histColor, p, outv);
+}

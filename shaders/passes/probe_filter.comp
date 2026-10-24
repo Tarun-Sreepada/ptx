@@ -1,0 +1,44 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define PROBES_WRITE
+#include "core/common.glsl"
+
+// Post-bake denoise: each probe becomes the average of itself and the valid neighbours in its 3x3x3 block that it
+// can see (a visibility ray per neighbour, so light never bleeds through a wall or floor). Run twice per baked
+// state. pc.a volume, pc.b state; writes probeTmp (indexed from the start of this block), copied back by the caller.
+layout(local_size_x = 64) in;
+layout(binding = 51, std430) writeonly buffer ProbeTmp { vec4 probeTmp[]; };
+
+void main() {
+    uint v = pc.a, st = pc.b;
+    uvec4 d = floatBitsToUint(vols[4u * v + 2u]);
+    uint i = gl_GlobalInvocationID.x, total = d.x * d.y * d.z;
+    if (i >= total) return;
+    vec4 a = vols[4u * v];
+    ivec3 c = ivec3(i % d.x, (i / d.x) % d.y, i / (d.x * d.y));
+    vec3 x = a.xyz + (vec3(c) + 0.5) * a.w;
+    uint base = probeBase(d, st, i), t = base - probeBase(d, st, 0u);
+    vec4 r = vec4(0), g = vec4(0), b = vec4(0);
+    float wSum = 0.0, self = probes[base + 3u].x;
+    for (int k = 0; k < 27; k++) {
+        ivec3 o = ivec3(k % 3, (k / 3) % 3, k / 9) - 1;
+        ivec3 q = c + o;
+        if (any(lessThan(q, ivec3(0))) || any(greaterThanEqual(q, ivec3(d.xyz)))) continue;
+        uint nb = probeBase(d, st, uint(q.x) + d.x * (uint(q.y) + d.y * uint(q.z)));
+        float w = probes[nb + 3u].x * (k == 13 ? 2.0 : 1.0);
+        if (w <= 0.0) continue;
+        if (k != 13 && self > 0.0) {
+            vec3 dv = vec3(o) * a.w;
+            float len = length(dv);
+            if (!visible(x, dv / len, len)) continue;
+        }
+        r += probes[nb] * w; g += probes[nb + 1u] * w; b += probes[nb + 2u] * w;
+        wSum += w;
+    }
+    if (wSum <= 0.0) {
+        probeTmp[t] = probes[base]; probeTmp[t + 1u] = probes[base + 1u]; probeTmp[t + 2u] = probes[base + 2u];
+    } else {
+        probeTmp[t] = r / wSum; probeTmp[t + 1u] = g / wSum; probeTmp[t + 2u] = b / wSum;
+    }
+    probeTmp[t + 3u] = probes[base + 3u];
+}

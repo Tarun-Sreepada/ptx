@@ -1,0 +1,181 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// Surface effects on the G-buffer, before any lighting: impact decals, then rain (porous surfaces soak up water and
+// darken, a film makes them glossy where the sky can reach them, rivulets run down walls, puddles collect on flat
+// ground with raindrop ripples, and under trees / eaves drips keep falling for a while after the rain).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+float h21(vec2 p) { return float(hashu(uint(int(p.x) * 7919 + int(p.y) * 104729 + 13))) / 4294967295.0; }
+
+// Raindrop ripples: expanding rings in a jittered grid, each cell restarting at its own phase. xy = normal slope.
+// rate 0..1: share of the cells with a drop in this cycle (light rain / drips: sparse rings).
+vec2 ripples(vec2 xz, float t, float rate) {
+    vec2 g = vec2(0);
+    for (int layer = 0; layer < 2; layer++) {
+        vec2 q = xz * (layer == 0 ? 3.0 : 4.3) + float(layer) * 17.3;
+        vec2 cell = floor(q);
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                vec2 c = cell + vec2(dx, dy);
+                float r0 = h21(c), r1 = h21(c + 31.7), r2 = h21(c + 57.1);
+                if (h21(c + vec2(floor(t * 1.3 + r2), 91.3)) > rate * 1.5) continue;  // no drop in this cell this time
+                vec2 ctr = c + vec2(r0, r1);
+                float ph = fract(t * 1.3 + r2);  // ring age, 0..1 (~0.77 s per drop)
+                vec2 dv = q - ctr;
+                float dist = length(dv);
+                float ring = dist - ph * 0.9;
+                float w = sin(ring * 40.0) * exp(-ring * ring * 60.0) * (1.0 - ph) * (1.0 - ph);
+                g += dv / max(dist, 1e-3) * w * 0.15;
+            }
+    }
+    return g;
+}
+
+// A footprint pressed into the ground: a sole with a heel and a toe box, the soil inside compacted (darker, smoother
+// where it's wet), the rim pushed up a little; the normal tilts into the hollow so it reads in raking light. dv: from
+// its centre, h: heading, L: half length (m), age (s).
+bool footprint(inout Surf sf, vec3 dv, vec3 h, float L, float age) {
+    vec3 side = vec3(h.z, 0.0, -h.x);
+    vec2 uv = vec2(dot(dv, side), dot(dv, h)) / L;  // across, along (-1 heel .. 1 toe)
+    float w = 0.36 * (1.0 - 0.28 * exp(-sq((uv.y - 0.05) / 0.25)));  // narrower at the arch
+    float shape = length(vec2(uv.x / w, uv.y)) - 1.0 + 0.04 * (vnoise(uv * 9.0 + dv.xz * 3.0) - 0.5);
+    float inside = 1.0 - smoothstep(-0.12, 0.04, shape), rim = exp(-sq(shape / 0.12)) * 0.5;
+    float fade = 1.0 - smoothstep(180.0, 240.0, age);
+    if (inside + rim <= 0.01 || fade <= 0.0) return false;
+    float wet = max(F.weather.x, F.wet2.x);
+    sf.base *= mix(1.0, 0.72 - 0.12 * wet, inside * fade);
+    sf.rough = mix(sf.rough, mix(0.85, 0.35, wet), inside * fade);
+    // the hollow's walls: normal tilted toward the middle, the rim outward
+    vec3 g = normalize(side * (uv.x / (w * w)) + h * uv.y) * (smoothstep(-0.25, 0.0, shape) * inside - rim);
+    sf.n = normalize(sf.n - g * 0.6 * fade);
+    return true;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    vec4 P = loadPos(p);
+    if (P.w < 0.0) return;
+    bool decals = F.lightInfo.w > 0u, wetOn = F.weather.x > 0.0 || F.wet2.x > 0.0 || F.wet2.y > 0.0;
+    if (!decals && !wetOn) return;
+    Surf sf = loadSurf(p);
+    vec3 n = sf.n, x = P.xyz;
+    uint mat = sf.mat;
+    bool changed = false;
+
+    // ---------------------------------------------------------------- decals
+    for (uint i = 0u; i < F.lightInfo.w; i++) {
+        vec4 c = F.decals[2u * i], q = F.decals[2u * i + 1u];
+        vec3 dv = x - c.xyz;
+        if (uint(q.w) == 3u) {  // a footprint: q.xyz = heading, on the ground
+            if (dot(dv, dv) > c.w * c.w * 2.0 || n.y < 0.5 || mat == MAT_GRASS) continue;
+            changed = footprint(sf, dv, q.xyz, c.w, fract(q.w) * 1000.0) || changed;
+            continue;
+        }
+        if (dot(dv, dv) > c.w * c.w * 1.6 || dot(n, q.xyz) < 0.2 || abs(dot(dv, q.xyz)) > c.w * 0.6) continue;
+        vec3 t, b;
+        onb(q.xyz, t, b);
+        vec2 uv = vec2(dot(dv, t), dot(dv, b)) / c.w;
+        uint kind = uint(q.w);
+        float age = fract(q.w) * 1000.0;
+        float fade = 1.0 - smoothstep(240.0, 300.0, age);
+        float r = length(uv);
+        float edge = r + 0.35 * (vnoise(uv * 5.0 + c.xz) - 0.5) + 0.15 * (vnoise(uv * 13.0 + c.zx) - 0.5);
+        float k = (1.0 - smoothstep(0.55, 1.0, edge)) * fade;
+        if (k <= 0.0) continue;
+        if (kind == 0u) {         // impact on a wall: pulverised dust ring + hairline cracks running out from it
+            float ang = atan(uv.y, uv.x);
+            float cr = abs(sin(ang * 7.0 + vnoise(vec2(r * 4.0, ang * 2.0)) * 3.0));
+            float crack = (1.0 - smoothstep(0.0, 0.06, cr)) * smoothstep(0.15, 0.3, r) * (1.0 - smoothstep(0.7, 1.0, r));
+            float dust = 1.0 - smoothstep(0.0, 0.45, r);
+            sf.base = mix(sf.base, sf.base * 0.25, crack * fade);
+            sf.base = mix(sf.base, vec3(0.62, 0.58, 0.52), dust * 0.6 * fade);
+            sf.rough = mix(sf.rough, 1.0, k);
+            sf.spec *= 1.0 - k;
+        } else if (kind == 1u) {  // mud / soil splatter thrown from a ground impact
+            // thrown-out soil: ejecta rays and clumps thinning outward, fresh moist earth (albedo ~0.2, not black)
+            float ang = atan(uv.y, uv.x);
+            float rays = smoothstep(0.35, 0.8, vnoise(vec2(ang * 3.2, c.x + c.z)) * (1.0 - smoothstep(0.3, 1.1, r)));
+            float spots = smoothstep(0.6, 0.8, vnoise(uv * 9.0 + c.xz * 3.0)) * (1.0 - smoothstep(0.7, 1.3, edge));
+            float m = clamp(max(rays * 0.6, spots * 0.7) * fade + k * 0.15, 0.0, 0.75);
+            vec3 soil = mix(vec3(0.20, 0.15, 0.10), vec3(0.28, 0.21, 0.14), vnoise(uv * 4.0 + c.zx));
+            sf.base = mix(sf.base, soil, m);
+            sf.rough = mix(sf.rough, 0.75, m);
+        } else {                  // fresh scar on bark / wood: pale splintered wood
+            sf.base = mix(sf.base, vec3(0.55, 0.42, 0.27), k);
+            sf.rough = mix(sf.rough, 0.9, k);
+        }
+        changed = true;
+    }
+
+    // ---------------------------------------------------------------- rain: wetness, puddles, ripples, drips
+    // F.weather.x = surface water film (fills fast in rain, runs off fast), F.wet2.x = water soaked into porous
+    // material (darkens; dries slowly, patchily, cavities last), F.wet2.y = water still dripping from canopies and
+    // eaves after rain, F.wet2.z = rivulets on steep faces.
+    if (wetOn && sf.metal < 0.5 && sf.trans < 0.5) {
+        float film = F.weather.x, soak = F.wet2.x, drip = F.wet2.y;
+        // porous: soil, rock, rough building materials (brick, concrete, plaster, wood); smooth / waxy ones bead
+        float porous = mat == MAT_TERRAIN ? 1.0 : (mat == MAT_ROCK ? 0.7 : (mat == MAT_GRASS ? 0.15 : smoothstep(0.35, 0.85, sf.rough) * 0.9));
+        // only what the rain can reach: a ray straight up must escape (skipped for faces pointing down). Under
+        // cover, drips from the canopy / eaves above wet spots and lines instead.
+        bool exposed = n.y >= -0.3 && visible(x + n * 0.02, vec3(0, 1, 0), 60.0);
+        float dryPat = vnoise(x.xz * 1.7 + x.y * 0.9) * 0.6 + vnoise(x.xz * 7.0 - x.y * 3.0) * 0.4;  // where it dries first
+        if (!exposed) {
+            float spots = smoothstep(0.55, 0.75, vnoise(x.xz * 9.0 + 3.0) * 0.6 + vnoise(x.xz * 2.3) * 0.4);
+            float under = n.y > 0.5 ? drip * spots : 0.0;
+            film = max(film * 0.1, under * 0.8);
+            soak = max(soak * 0.15, under);
+        }
+        // drying: high, exposed, open spots first; cavities (low ao) and the patches dryPat marks hold water longer
+        float hold = dryPat * 0.5 + (1.0 - sf.ao) * 0.6;
+        float wetDark = smoothstep(hold - 0.25, hold + 0.15, soak * 1.2) * porous;
+        // darker (water fills the pores: less scattering at the surface), and a film once the pores are full
+        sf.base = mix(sf.base, sf.base * sf.base * 1.6, wetDark * 0.8);
+        sf.base *= 1.0 - 0.25 * wetDark;
+        float filmK = film * mix(1.0, smoothstep(0.5, 0.9, soak), porous);
+        sf.rough = mix(sf.rough, max(sf.rough * 0.25, 0.06), filmK);
+        sf.spec = mix(sf.spec, 1.0, filmK);
+        // rivulets: on steep faces water gathers into streaks running down (darker, glossy, moving bumps)
+        if (F.wet2.z > 0.0 && abs(n.y) < 0.7 && exposed && film > 0.05) {
+            vec3 hz = normalize(cross(vec3(0, 1, 0), n) + vec3(1e-4, 0, 0));
+            float u = dot(x, hz) * 14.0;
+            float col = floor(u), fu = fract(u);
+            float r0 = h21(vec2(col, 7.0)), r1 = h21(vec2(col, 19.0));
+            float lane = 1.0 - smoothstep(0.05, 0.16 + 0.1 * r1, abs(fu - 0.3 - 0.4 * r0 - 0.08 * sin(x.y * 9.0 + r1 * 6.0)));
+            float flow = x.y * 2.2 + F.camPos.w * (1.2 + r1) + r0 * 10.0;
+            float drop = smoothstep(0.75, 1.0, fract(flow)) * lane;
+            float k = lane * step(0.45, r0 + 0.5 * F.wet2.z - 0.25) * min(film * 2.0, 1.0) * F.wet2.z;
+            sf.base *= 1.0 - 0.3 * k * (1.0 - porous * 0.5);
+            sf.rough = mix(sf.rough, 0.04, k);
+            sf.spec = mix(sf.spec, 1.0, k);
+            n = normalize(n + hz * (drop - 0.5) * 0.4 * k);
+        }
+        float puddle = 0.0;
+        if (mat == MAT_TERRAIN && n.y > 0.9 && F.weather.z > 0.0) {
+            float cav = vnoise(x.xz * 0.35) * 0.7 + vnoise(x.xz * 1.1 + 7.0) * 0.3;  // where water collects
+            puddle = smoothstep(0.62 - 0.3 * F.weather.z, 0.7 - 0.3 * F.weather.z, cav) * F.weather.x * smoothstep(0.9, 0.97, n.y);
+        }
+        if (puddle > 0.0) {
+            sf.base = mix(sf.base, sf.base * 0.45, puddle);
+            sf.rough = mix(sf.rough, 0.02, puddle);
+            sf.spec = mix(sf.spec, 1.0, puddle);
+        }
+        // the world sim's standing water (runoff in dips and craters) is a puddle too
+        if (mat == MAT_TERRAIN && F.sim1.w > 0.5) puddle = max(puddle, smoothstep(0.008, 0.03, simAt(x.xz).y));
+        if (puddle > 0.0) {
+            // raindrop rings in the open; under cover, the sparser rings of drips falling from above
+            float rate = exposed ? F.weather.y : drip * 0.35;
+            vec3 pn = vec3(0, 1, 0);
+            if (rate > 0.0) { vec2 g = ripples(x.xz, F.camPos.w, rate) * min(rate * 3.0, 1.0); pn = normalize(vec3(-g.x, 1.0, -g.y)); }
+            n = normalize(mix(n, pn, puddle));
+            sf.n = n;
+            sf.T = normalize(cross(vec3(0, 0, 1), n));
+        }
+        changed = true;
+    }
+    if (!changed) return;
+    storeSurf(p, sf);
+    imageStore(gNorm, p, vec4(n, float(mat)));
+}

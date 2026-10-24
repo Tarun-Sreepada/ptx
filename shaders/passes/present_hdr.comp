@@ -1,0 +1,33 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+#include "post/post.glsl"
+
+// HDR present: the HDR frame letterboxed into the swapchain-sized image, with the UI (rendered SDR, sRGB) over it
+// at paper white. pc.a, pc.b = destination offset of the frame, pc.c, pc.d = its size.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 88) uniform sampler2D uiTex;
+layout(binding = 89, rgba16f) uniform writeonly image2D presentImg;
+
+float srgbEOTF(float x) { return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(presentImg);
+    if (any(greaterThanEqual(p, sz))) return;
+    uint display = uint(F.post4.x + 0.5);
+    vec3 black = display == 1u ? pqOETF(vec3(0)) : vec3(0);
+    vec3 c = black;
+    ivec2 q = p - ivec2(pc.a, pc.b);
+    if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, ivec2(pc.c, pc.d)))) {
+        ivec2 hs = imageSize(hdrOut);
+        c = imageLoad(hdrOut, clamp(q * hs / ivec2(pc.c, pc.d), ivec2(0), hs - 1)).rgb;
+    }
+    vec4 ui = texelFetch(uiTex, p, 0);
+    if (ui.a > 0.0) {
+        vec3 lin = vec3(srgbEOTF(ui.r), srgbEOTF(ui.g), srgbEOTF(ui.b));
+        vec3 u = display == 1u ? pqOETF(REC709_TO_2020 * lin * F.post4.y) : lin * (F.post4.y / 80.0);
+        c = mix(c, u, ui.a);  // blended in the encoded space: fine for UI
+    }
+    imageStore(presentImg, p, vec4(c, 1));
+}

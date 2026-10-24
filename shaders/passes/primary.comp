@@ -1,0 +1,57 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// Primary visibility -> G-buffer.
+// pc.a = 0: trace camera rays. pc.a = 1: the raster pass already filled the G-buffer;
+// only add sky and the light orbs (analytic spheres, depth-tested against the raster hit).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    vec3 o = F.camPos.xyz;
+    vec3 d = cameraRay(p);
+    bool raster = pc.a == 1u;
+    if (!raster && inScreen(p)) imageStore(gVel, p, vec4(0));  // traced primary: camera motion only
+
+    Hit h;
+    if (raster) {
+        vec4 P = loadPos(p);
+        h.hit = P.w >= 0.0;
+        h.t = P.w;
+    } else {
+        h = traceClosest(o, d, 1e4);
+    }
+
+    // light orbs are analytic spheres, only visible to camera rays (shown at a fixed brightness so they keep their colour)
+    float tMax = h.hit ? h.t : 1e30;
+    bool orbHit = false;
+    vec3 orb = vec3(0);
+    for (uint i = 0u; i < F.res.w; i++) {
+        if (lights[2u * i + 1u].w > 0.5) continue;  // hidden (a fire's light: its flames are what's seen)
+        vec4 L = lights[2u * i];
+        vec3 oc = o - L.xyz;
+        float b = dot(oc, d);
+        float c = dot(oc, oc) - L.w * L.w;
+        float disc = b * b - c;
+        if (disc > 0.0) {
+            float t = -b - sqrt(disc);
+            if (t > 0.0 && t < tMax) { tMax = t; orbHit = true; vec3 I = lights[2u * i + 1u].rgb; orb = I / max(max(I.r, I.g), max(I.b, 1e-4)) * 3.0; }
+        }
+    }
+
+    if (orbHit || !h.hit) {
+        imageStore(gDepth, p, vec4(-1));
+        imageStore(gNorm, p, vec4(0));
+        imageStore(gAlbedo, p, vec4(0));
+        imageStore(gEmis, p, vec4(orbHit ? orb : skyWithSun(d), 0));
+        if (!raster) { imageStore(gMat, p, vec4(0)); imageStore(gMat2, p, vec4(0)); imageStore(gTan, p, vec4(0)); }
+        return;
+    }
+    if (raster) return;
+    imageStore(gDepth, p, vec4(h.t));
+    imageStore(gNorm, p, vec4(h.n, float(h.mat & 0xFFu)));
+    storeSurf(p, h.s);
+    imageStore(gEmis, p, vec4(h.emis, 0));
+}
