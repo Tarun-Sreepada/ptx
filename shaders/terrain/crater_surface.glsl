@@ -20,13 +20,14 @@ const float CRATER_RESOLVED = 0.15;  // a bowl is in the mesh when its radius sp
 // crater) plus only the craters that reach it (<= CRATER_LOCAL): cheap, smooth, and the same surface for the camera
 // and the shadow rays, so they agree.
 const int CRATER_LOCAL = 8;
-struct CraterLocal { int n; uint idx[CRATER_LOCAL]; vec2 o; float hb; vec2 g; float depth; float minR; };
-// exact: fit the ground at p from the real terrain (3 evaluations: right next to a river bank or a slope the
-// crater-centre plane is metres off). Otherwise the CPU's plane under the biggest crater (free, good away from banks).
+struct CraterLocal { int n; uint idx[CRATER_LOCAL]; vec2 o; float hb; vec2 g; float depth; float minR; bool exact; };
+// exact: the real ground (and snow) under the craters at every sample: a plane through the point flattened the
+// bumps around a small bowl into a disc. Otherwise the CPU's plane under the biggest crater (free, good away from banks).
 bool craterLocal(vec2 p, float reach, bool exact, out CraterLocal L) {
     // the craters that shape the ground here: in a dense cluster keep the most influential (closest relative to
     // their reach), not the first in the list, so overlapping bowls all count
     L.n = 0;
+    L.exact = exact;
     L.depth = 0.0;
     L.minR = 1e9;
     if (F.dynInfo.z == 0u) return false;
@@ -76,6 +77,7 @@ bool craterLocal(vec2 p, float reach, bool exact, out CraterLocal L) {
 float localHeight(CraterLocal L, vec2 q) {
     CraterSum s = craterSumInit();
     for (int k = 0; k < L.n; k++) craterAcc(F.craters[L.idx[k]], F.craterG[L.idx[k]], q, s);
+    if (L.exact) return craterApply(groundBase(q), s) + snowDepth(q);
     return craterApply(L.hb + dot(L.g, q - L.o), s);
 }
 // the bowl here is too small for the mesh at this distance from the camera

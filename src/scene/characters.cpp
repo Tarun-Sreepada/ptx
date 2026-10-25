@@ -87,7 +87,7 @@ void spawnCharacters() {
         if (!c) continue;
         c->walkSpeed = sp.walk;
         c->wild = sp.wild;
-        c->forward = sp.forward;
+        if (sp.forward != 0.f) c->forward = sp.forward;
         if (!sp.clip.empty()) character::play(*c, character::findClip(d, sp.clip.c_str()), 0.f);
         auto* gc = new GpuChar;
         gc->asset = a;

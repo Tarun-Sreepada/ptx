@@ -57,7 +57,9 @@ void landImpact(Thrown& t, const float v0[3], const float v1[3], float mass, flo
     };
     bool onGround = p.y - t.radius * 0.7f < heightFn(p.x, p.z) + 0.3f;
     // a procedural tree? Its limbs take the blow as beams (any impact, the stress decides)
-    if (E > 5.f && !treeList.empty()) {
+    // (not a loose piece of tree: lying against its stump or in a crown it "struck" it every contact, each cut
+    // spawning more pieces that struck again; its touchdowns break it instead, below)
+    if (E > 5.f && !treeList.empty() && !t.woodPart) {
         V3 vel{v0[0], v0[1], v0[2]};
         if (strikeTrees(pc, vel, mass, t.radius * 0.3f + 0.25f)) {
             sound(SOUND_WOOD);
@@ -73,7 +75,9 @@ void landImpact(Thrown& t, const float v0[3], const float v1[3], float mass, flo
     // a loose piece of tree landing: its own joints may give
     if (t.woodPart && pendingWood.size() < 16 && dot(dv, dv) < 50.f * 50.f) {  // (bigger: a depenetration kick, not a landing)
         V3 Jw = dv * mass, Jl = woodRotT(wf, Jw);
-        trees::WoodHit h = trees::woodLanding(*t.woodPart, wf.s, &wl.x, &Jl.x);
+        // the spin before the contact took it (thrown.cpp keeps last frame's)
+        V3 vl = woodRotT(wf, V3{v0[0], v0[1], v0[2]}), wl2 = woodRotT(wf, V3{t.w0[0], t.w0[1], t.w0[2]}), nl = woodRotT(wf, n);
+        trees::WoodHit h = trees::woodLanding(*t.woodPart, wf.s, &wl.x, &Jl.x, &vl.x, &wl2.x, &nl.x);
         if (treeLog) fprintf(stderr, "wood landed: %.0f kg, dv %.1f m/s: stress %.2f, %zu cut, %d leaves\n", mass, sqrtf(dot(dv, dv)), h.ratio, h.cuts.size(), h.lost);
         bool queued = false;
         for (auto& q : pendingWood) queued |= q.body == t.body;

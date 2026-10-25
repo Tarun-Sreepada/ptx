@@ -17,6 +17,7 @@ extern std::vector<std::unique_ptr<FragSet>> fragSets;
 
 struct Thrown {
     uint32_t body; float sc; Xf xf; bool wet = false; float v[3] = {}; float cooldown = 0.f, trail = 0.f;
+    float w[3] = {}, w0[3] = {};                 // angular velocity this frame / the one before (wood landings)
     float radius = 0.f;                          // bounding radius (m)
     FragSet* frag = nullptr; uint32_t fragMesh = 0;  // a fragment: own mesh, own hull; else the rock mesh at scale sc
     uint32_t rockVar = 0;                        // which generated rock mesh (not a fragment)

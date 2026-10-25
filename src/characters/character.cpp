@@ -294,6 +294,14 @@ Character* spawn(const ModelData& d, const float pos[3], float yaw, float height
     c->footOffset = -mn[1] * c->scale;
     float hw = h * c->scale;
     c->mass = std::clamp(70.f * hw * hw * hw / (1.75f * 1.75f * 1.75f), 3.f, 300.f);
+    // which way it faces: the head is at the front (glTF says +z, rigs often disagree)
+    for (size_t j = 0; j < s.names.size() && j < G.size(); j++) {
+        std::string nm = s.names[j];
+        for (char& ch : nm) ch = (char)tolower((unsigned char)ch);
+        if (nm.find("head") == std::string::npos) continue;
+        c->forward = G[j].m[2][3] >= 0.5f * (mn[2] + mx[2]) ? 1.f : -1.f;
+        break;
+    }
     buildParts(*c, G, vpos, vjoint, E);
     chars.push_back(c);
     return c;

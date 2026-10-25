@@ -128,6 +128,8 @@ void updateThrown(float dt) {
         float v0[3];
         memcpy(v0, t.v, 12);
         memcpy(t.v, v, 12);
+        memcpy(t.w0, t.w, 12);
+        memcpy(t.w, w, 12);
         t.cooldown -= dt;
         float x = t.xf.m[0][3], y = t.xf.m[1][3], z = t.xf.m[2][3], r = t.radius;
         if (t.woodPart) {  // a broken limb tumbles no faster than air drag on its leaves and twigs lets it (~2 turns/s)
@@ -140,6 +142,10 @@ void updateThrown(float dt) {
         }
         float dv[3] = {v[0] - v0[0], v[1] - v0[1], v[2] - v0[2]};
         bool hardHit = dv[0] * dv[0] + (dv[1] + 9.8f * dt) * (dv[1] + 9.8f * dt) + dv[2] * dv[2] > 9.f;
+        if (t.woodPart && !hardHit) {  // a falling trunk lands mostly by its spin stopping (the far end slams down)
+            float dw[3] = {w[0] - t.w0[0], w[1] - t.w0[1], w[2] - t.w0[2]};
+            hardHit = (dw[0] * dw[0] + dw[1] * dw[1] + dw[2] * dw[2]) * r * r > 9.f;
+        }
         float level = waterLevelAt(x, z);
         bool overWater = level > -1e8f;
         RiverInfo ri = riverInfo(x, z);

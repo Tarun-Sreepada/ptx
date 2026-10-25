@@ -23,7 +23,7 @@ struct GpuCharMesh {
 
 struct GpuChar { CharAsset* asset = nullptr; Buffer mats; std::vector<GpuCharMesh> meshes; uint32_t frames = 0; Xf prevW{}; bool hasPrev = false; };
 
-struct CharSpawn { std::string asset, clip; float pos[3], yaw, height, walk; bool wild = false; float forward = 1.f; };
+struct CharSpawn { std::string asset, clip; float pos[3], yaw, height, walk; bool wild = false; float forward = 0.f; };  // forward 0: from the rig (character::spawn)
 
 extern std::vector<CharSpawn> charSpawns;
 

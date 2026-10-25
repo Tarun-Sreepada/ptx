@@ -116,7 +116,7 @@ void woodSupport(const Wood& w, const float dir[3], float out[3]);
 // (centre3, one-sided leaf area).
 void woodHydro(const Wood& w, std::vector<float>& tubes, std::vector<float>& plates);
 struct WoodHit {
-    std::vector<int> cuts;         // elements whose base fails (loose: several, none nested)
+    std::vector<int> cuts;         // elements whose base fails (loose: several, not at neighbouring joints)
     float ratio = 0.f;             // worst stress / strength
     float impulse[3] = {};         // anchored: momentum the wood took from the impactor (N s, local axes)
     float keep = 1.f;              // anchored: fraction of the impactor's normal speed left after a snap
@@ -125,8 +125,10 @@ struct WoodHit {
 };
 // Anchored wood at instance scale s struck at local p (unscaled) by mass m (kg) moving at vel (m/s, local axes).
 WoodHit woodStrike(const Wood& w, float s, const float p[3], const float vel[3], float m);
-// Loose wood at scale s: impulse J (N s, local axes) at local p, delivered over ~10 ms.
-WoodHit woodLanding(const Wood& w, float s, const float p[3], const float J[3]);
+// Loose wood at scale s landing: the solver's impulse J (N s, local axes) at local p (unscaled), delivered over
+// ~10 ms, and every element near the ground plane (normal n, through p) stopped from its own speed there (body
+// velocity v and angular velocity av before the landing, local axes).
+WoodHit woodLanding(const Wood& w, float s, const float p[3], const float J[3], const float v[3], const float av[3], const float n[3]);
 // Apply a hit's leaf losses (local positions of the fallen leaves appended to shed) and its cuts: each cut
 // subtree moves to a new loose Wood in off.
 void woodApply(Wood& w, const WoodHit& h, std::vector<Wood>& off, std::vector<float>* shed);

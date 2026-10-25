@@ -96,9 +96,10 @@ void fillWorldState(UBO& u) {
         memcpy(u.splashEv[2 * i], d, sizeof d);
     }
     u.dynInfo[2] = (uint32_t)std::min(gCraterCount.load(), MAX_CRATERS);
-    memcpy(u.craters, gCraters, sizeof(Crater) * u.dynInfo[2]);
     for (uint32_t i = 0; i < u.dynInfo[2]; i++) {
         const CraterWater& w = craterWater[i];
+        // (Crater carries its ground plane too: not a vec4, so copied field by field)
+        u.craters[i][0] = gCraters[i].x; u.craters[i][1] = gCraters[i].z; u.craters[i][2] = gCraters[i].r; u.craters[i][3] = gCraters[i].depth;
         u.craterG[i][0] = w.ground[0]; u.craterG[i][1] = gCraters[i].gx; u.craterG[i][2] = gCraters[i].gz; u.craterG[i][3] = gCraters[i].base;
         u.craterW[i][0] = w.pond ? w.level : -1e9f; u.craterW[i][1] = w.fill; u.craterW[i][2] = w.divert; u.craterW[i][3] = w.inflowSpeed;
     }

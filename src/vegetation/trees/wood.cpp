@@ -311,7 +311,7 @@ WoodHit woodStrike(const Wood& w, float s, const float pp[3], const float vel[3]
     return h;
 }
 
-WoodHit woodLanding(const Wood& w, float s, const float pp[3], const float Jp[3]) {
+WoodHit woodLanding(const Wood& w, float s, const float pp[3], const float Jp[3], const float vp[3], const float wp[3], const float np[3]) {
     WoodHit h;
     const Skel& S = skel(w.v);
     const Plan& p = plan(w.v);
@@ -322,44 +322,76 @@ WoodHit woodLanding(const Wood& w, float s, const float pp[3], const float Jp[3]
     loads(w, S, s, L);
     if (L.M <= 0.f) return h;
     V q = V{pp[0], pp[1], pp[2]} * s;
-    constexpr float TAU_C = 0.01f;  // contact time of wood landing on ground / rock
-    V F = V{Jp[0], Jp[1], Jp[2]} * (1.f / TAU_C);
+    constexpr float TAU_C = 0.01f;         // contact time of wood landing on ground / rock
+    constexpr float CONTACT_BAND = 0.25f;  // an element this close to the ground plane lands with the contact (m)
+    constexpr float RESTITUTION = 0.2f;
+    constexpr int MAX_CUTS = 8;
+    // every element down on the ground is stopped from its own speed there (v + w x r): a falling trunk slaps
+    // along its length, the tip (fastest) hardest. What the solver reported at the first contact is the floor.
+    V v0{vp[0], vp[1], vp[2]}, w0{wp[0], wp[1], wp[2]}, nl{np[0], np[1], np[2]};
+    nl = nl * (1.f / std::max(sqrtf(dot(nl, nl)), 1e-6f));
+    struct Push { int k; V x, f; };
+    std::vector<Push> push;
+    V Fsum{0, 0, 0};
+    for (size_t k = 0; k < n; k++) {
+        if (!w.has[k]) continue;
+        const Elem& K = S.e[k];
+        V x = (K.a + K.b) * (0.5f * s);
+        float lo = std::min(dot(K.a * s - q, nl), dot(K.b * s - q, nl)) - K.ra * s;
+        if (lo > CONTACT_BAND) continue;
+        float vn = dot(v0 + cross(w0, x - L.com), nl);
+        if (vn >= 0.f) continue;
+        V f = nl * (-vn * (1.f + RESTITUTION) * K.mass * s3 / TAU_C);
+        push.push_back({(int)k, x, f});
+        Fsum = Fsum + f;
+    }
+    V Fp = V{Jp[0], Jp[1], Jp[2]} * (1.f / TAU_C);
+    float extra = dot(Fp, nl) - dot(Fsum, nl);
+    int e0 = -1;
+    {
+        float dist, tHit;
+        e0 = nearestElem(w, S, V{pp[0], pp[1], pp[2]}, dist, tHit);
+    }
+    if (extra > 0.f && e0 >= 0) { push.push_back({e0, q, nl * extra}); Fsum = Fsum + nl * extra; }
+    V Ft = Fp - nl * dot(Fp, nl);  // friction / shear the solver saw
+    if (e0 >= 0) { push.push_back({e0, q, Ft}); Fsum = Fsum + Ft; }
     float I[3][3];
     inertia(w, S, s, L, I);
     for (int a = 0; a < 3; a++) I[a][a] += 1e-4f * L.M + 1e-6f;
     float det = I[0][0] * (I[1][1] * I[2][2] - I[1][2] * I[2][1]) - I[0][1] * (I[1][0] * I[2][2] - I[1][2] * I[2][0]) + I[0][2] * (I[1][0] * I[2][1] - I[1][1] * I[2][0]);
-    V tq = cross(q - L.com, F);
+    V tq{0, 0, 0};
+    for (const Push& u : push) tq = tq + cross(u.x - L.com, u.f);
     // alpha = I^-1 tq (Cramer)
     auto col = [&](int c, V r) { float M[3][3]; memcpy(M, I, sizeof M); M[0][c] = r.x; M[1][c] = r.y; M[2][c] = r.z;
         return M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]); };
     V alpha = fabsf(det) > 1e-12f ? V{col(0, tq), col(1, tq), col(2, tq)} * (1.f / det) : V{0, 0, 0};
-    V a0 = F * (1.f / L.M);
+    V a0 = Fsum * (1.f / L.M);
     auto acc = [&](V x) { return a0 + cross(alpha, x - L.com); };
-    float dist, tHit;
-    int e = nearestElem(w, S, V{pp[0], pp[1], pp[2]}, dist, tHit);
-    // every joint holds what it takes to drag the part beyond it (the side away from the contact) along
+    // every joint holds the part beyond it: the ground's pushes on that part less what it takes to accelerate it
     struct Cand { int k; float r; };
     std::vector<Cand> cand;
     for (size_t k = 0; k < n; k++) {
         int pa = S.e[k].parent;
         if (!w.has[k] || pa < 0 || !w.has[pa]) continue;
-        bool contactSide = e >= 0 && inSubtree(S, (int)k, e);
-        float ms = contactSide ? L.M - L.m[k] : L.m[k];
+        float ms = L.m[k];
         if (ms < 1e-3f) continue;
-        V cs = (contactSide ? L.com * L.M - L.mom[k] : L.mom[k]) * (1.f / ms);
         const Elem& K = S.e[k];
-        V a = K.a * s;
-        float rt = sectionRatio(cross(cs - a, acc(cs) * ms), K.b - K.a, K.ra * s, strength * jointFactor(S, (int)k));
         if (K.ra * s < MIN_SNAP_R) continue;
+        V cs = L.mom[k] * (1.f / ms), a = K.a * s;
+        V M = cross(cs - a, acc(cs) * ms) * -1.f;
+        for (const Push& u : push) if (inSubtree(S, (int)k, u.k)) M = M + cross(u.x - a, u.f);
+        float rt = sectionRatio(M, K.b - K.a, K.ra * s, strength * jointFactor(S, (int)k));
         h.ratio = std::max(h.ratio, rt);
         if (rt > 1.f) cand.push_back({(int)k, rt});
     }
+    // the worst first; several along one trunk too (a hard landing breaks a log in pieces), but not at
+    // neighbouring joints (no slivers)
     std::sort(cand.begin(), cand.end(), [](const Cand& a, const Cand& b) { return a.r > b.r; });
     for (const Cand& c : cand) {
-        if (h.cuts.size() >= 3) break;
-        bool nested = false;
-        for (int k : h.cuts) nested |= inSubtree(S, k, c.k) || inSubtree(S, c.k, k);
-        if (!nested) h.cuts.push_back(c.k);
+        if ((int)h.cuts.size() >= MAX_CUTS) break;
+        bool near = false;
+        for (int k : h.cuts) near |= k == c.k || S.e[k].parent == c.k || S.e[c.k].parent == k;
+        if (!near) h.cuts.push_back(c.k);
     }
     for (size_t i = 0; i < S.leafElem.size(); i++) {
         if (!w.has[S.leafElem[i]] || !w.leaves[i]) continue;
@@ -387,7 +419,9 @@ void woodApply(Wood& w, const WoodHit& h, std::vector<Wood>& off, std::vector<fl
                 shed->insert(shed->end(), {q.x, q.y, q.z});
             }
     }
-    for (int c : h.cuts) {
+    std::vector<int> cuts = h.cuts;
+    std::sort(cuts.begin(), cuts.end(), std::greater<int>());  // deepest first: nested cuts each take their own piece
+    for (int c : cuts) {
         if (c < 0 || c >= (int)n || !w.has[c]) continue;
         Wood o;
         o.v = w.v;

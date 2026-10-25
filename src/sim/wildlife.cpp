@@ -88,6 +88,5 @@ void updateWildlife(float dt) {
     if (!dryLand(x, z)) return;
     CharSpawn sp{FOX_ASSET, "Walk", {x, 0.f, z}, rnd01() * 6.2831853f, FOX_HEIGHT, WALK};
     sp.wild = true;
-    sp.forward = -1.f;
     charSpawns.push_back(sp);
 }
