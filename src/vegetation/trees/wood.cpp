@@ -222,13 +222,16 @@ void woodHydro(const Wood& w, std::vector<float>& tubes, std::vector<float>& pla
     }
 }
 
+// standing trees carry defects (knots, rot, old cracks): they give at ~70% of clear green wood's modulus of rupture
+constexpr float WOOD_WEAKEN = 0.7f;
+
 WoodHit woodStrike(const Wood& w, float s, const float pp[3], const float vel[3], float m) {
     WoodHit h;
     const Skel& S = skel(w.v);
     const Plan& p = plan(w.v);
     const TreeParams& P = treeParams[w.v / 2];
     h.lose.assign(S.leafElem.size(), 0);
-    float strength = P.strength * 1e6f, Emod = 9e9f * std::clamp(P.strength / 50.f, 0.4f, 1.6f), G = Emod / 16.f, s3 = s * s * s;
+    float strength = P.strength * 1e6f * WOOD_WEAKEN, Emod = 9e9f * std::clamp(P.strength / 50.f, 0.4f, 1.6f), G = Emod / 16.f, s3 = s * s * s;
     float dist, tHit;
     int e = nearestElem(w, S, V{pp[0], pp[1], pp[2]}, dist, tHit);
     if (e < 0) return h;
@@ -315,7 +318,7 @@ WoodHit woodLanding(const Wood& w, float s, const float pp[3], const float Jp[3]
     WoodHit h;
     const Skel& S = skel(w.v);
     const Plan& p = plan(w.v);
-    float strength = treeParams[w.v / 2].strength * 1e6f, s3 = s * s * s;
+    float strength = treeParams[w.v / 2].strength * 1e6f * WOOD_WEAKEN, s3 = s * s * s;
     size_t n = S.e.size();
     h.lose.assign(S.leafElem.size(), 0);
     Loads L;
