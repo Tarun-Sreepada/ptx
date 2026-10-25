@@ -6,8 +6,11 @@
 #include <cstdint>
 #include "world/terrain.h"
 #include "gpu/vk.h"
+#include "core/limits.h"
+#include "scene/grass.h"
 
 static constexpr float CB_CELL = 16.f;
+static constexpr float HALF0 = 0.5f * TERRAIN_GRID * TERRAIN_SPACING0;  // finest clipmap level's half width
 
 Buffer craterBinBuf;
 
@@ -24,7 +27,11 @@ void buildCraterBins(float cx, float cz) {
     for (auto& l : lists) l.clear();
     for (int i = 0; i < n; i++) {
         const Crater& c = gCraters[i];
-        float reach = CRATER_EJECTA_REACH * c.r + 1.f;  // the ejecta blanket's edge (terrain.h)
+        // the ejecta blanket's edge (terrain.h), and past it the mesh pit of a bowl smaller than the mesh cells
+        // there (crater_surface.glsl craterLocal: 1.5 x the clipmap spacing at that distance)
+        float d = std::max(hypotf(c.x - cx, c.z - cz) - c.r, 1e-3f);
+        float level = std::clamp(ceilf(log2f(d / HALF0)), 0.f, (float)terrainLevels - 1.f);
+        float reach = CRATER_EJECTA_REACH * c.r + std::max(1.f, 1.5f * TERRAIN_SPACING0 * exp2f(level));
         int x0 = (int)floorf((c.x - reach) / CB_CELL) - ox, x1 = (int)floorf((c.x + reach) / CB_CELL) - ox;
         int z0 = (int)floorf((c.z - reach) / CB_CELL) - oz, z1 = (int)floorf((c.z + reach) / CB_CELL) - oz;
         for (int z = std::max(z0, 0); z <= std::min(z1, CB_N - 1); z++)

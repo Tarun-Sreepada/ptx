@@ -30,6 +30,10 @@ bool craterLocal(vec2 p, float reach, bool exact, out CraterLocal L) {
     L.depth = 0.0;
     L.minR = 1e9;
     if (F.dynInfo.z == 0u) return false;
+    // a bowl smaller than the mesh cells still dips the vertices around it: the pit reaches a cell diagonal out
+    // (square / diamond), so that far counts as the crater's too and is put back on the exact surface
+    float cell = 1.5 * terrainSpacing(length(p - F.terrainP.xy));
+    reach = max(reach, cell);
     float score[CRATER_LOCAL];
     uint cs, cn;
     bool bn = craterRange(p, cs, cn);
@@ -53,7 +57,7 @@ bool craterLocal(vec2 p, float reach, bool exact, out CraterLocal L) {
     for (int k = 0; k < L.n; k++) {
         vec4 c = F.craters[L.idx[k]];
         L.depth = max(L.depth, c.w);
-        if (length(p - c.xy) < 1.2 * c.z) L.minR = min(L.minR, c.z);  // only bowls the point is in decide the resolution
+        if (length(p - c.xy) < 1.2 * c.z + cell) L.minR = min(L.minR, c.z);  // only bowls the point is in (or their mesh pit) decide the resolution
         if (c.z > F.craters[L.idx[big]].z) big = k;
     }
     if (exact) {

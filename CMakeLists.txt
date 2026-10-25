@@ -173,9 +173,27 @@ target_include_directories(ptx PRIVATE ${NVTX3_INCLUDE})
 target_compile_definitions(ptx PRIVATE PTX_NVTX=1)
 add_dependencies(ptx shaders)
 
-# DLSS Ray Reconstruction: NVIDIA DLSS SDK cloned into external/dlss (git LFS). Feature .so is copied next to the binary.
+# DLSS Ray Reconstruction: NVIDIA DLSS SDK fetched into external/dlss (binaries are git LFS). Feature .so is copied next to the binary.
 set(DLSS_SDK ${CMAKE_SOURCE_DIR}/external/dlss)
+set(DLSS_TAG v310.9.16)
 option(PTX_DLSS "Build with DLSS Ray Reconstruction" ON)
+if(PTX_DLSS AND NOT EXISTS ${DLSS_SDK}/lib/Linux_x86_64/libnvsdk_ngx.a)
+  find_package(Git QUIET)
+  if(GIT_FOUND)
+    message(STATUS "DLSS: fetching NVIDIA/DLSS ${DLSS_TAG}")
+    if(NOT EXISTS ${DLSS_SDK}/.git)
+      execute_process(COMMAND ${GIT_EXECUTABLE} -c filter.lfs.smudge= -c filter.lfs.required=false
+                        clone --depth 1 --branch ${DLSS_TAG} https://github.com/NVIDIA/DLSS.git ${DLSS_SDK}
+                      RESULT_VARIABLE DLSS_RC)
+    endif()
+    execute_process(COMMAND ${GIT_EXECUTABLE} lfs install --local WORKING_DIRECTORY ${DLSS_SDK} OUTPUT_QUIET)
+    execute_process(COMMAND ${GIT_EXECUTABLE} lfs pull --include "include/**,lib/Linux_x86_64/**"
+                    WORKING_DIRECTORY ${DLSS_SDK} RESULT_VARIABLE DLSS_RC)
+    if(NOT DLSS_RC EQUAL 0)
+      message(WARNING "DLSS: fetch failed (is git-lfs installed?)")
+    endif()
+  endif()
+endif()
 if(PTX_DLSS AND EXISTS ${DLSS_SDK}/lib/Linux_x86_64/libnvsdk_ngx.a)
   target_compile_definitions(ptx PRIVATE PTX_DLSS)
   target_include_directories(ptx PRIVATE ${DLSS_SDK}/include)
