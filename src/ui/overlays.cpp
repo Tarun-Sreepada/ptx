@@ -144,7 +144,7 @@ void editorToggle() {
     if (tab && !tabPrev) editor::setActive(!editor::active());
     tabPrev = tab;
     V3 f = cam.fwd(), r = cam.right(), u = cam.up();
-    editor::View ev{{cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, {r.x, r.y, r.z}, {u.x, u.y, u.z}, tanf(cam.fovDeg * 0.5f * DEG)};
+    editor::View ev{{cam.pos.x, cam.pos.y, cam.pos.z}, {f.x, f.y, f.z}, {r.x, r.y, r.z}, {u.x, u.y, u.z}, tanf(cam.fov() * 0.5f * DEG)};
     editor::ui(ev);
 }
 

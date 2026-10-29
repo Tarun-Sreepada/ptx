@@ -1,4 +1,5 @@
 #include "scene/scene_gpu.h"
+#include "render/veg_gpu.h"
 
 #include <cstring>
 #include <random>
@@ -119,6 +120,7 @@ void createSmallBuffers() {
     exposureBuf = mkBuf(EXPOSURE_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, HOST);
     memset(exposureBuf.map, 0, EXPOSURE_BYTES);
     createOcclusionBuffer();
+    createVegGpu();
 }
 
 // light orbs drift in a square tile (S.orbRange wide) that wraps around the camera; positions in tile units
@@ -147,7 +149,7 @@ void createModelTables() {
     memset(meshInfoBuf.map, 0, MAX_MESHES * 32);
     materialBuf = mkBuf(MAX_MATERIALS * sizeof(GpuMat), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, HOST, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     // second half: each instance's previous-frame transform (motion vectors)
-    modelXfBuf = mkBuf(MAX_MODEL_INST * 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, HOST, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    modelXfBuf = mkBuf((VkDeviceSize)XF_SLOTS * 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, HOST, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     zoneBuf = mkBuf(MAX_ZONES * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, HOST, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     memset(zoneBuf.map, 0, MAX_ZONES * 32);
     volBuf = mkBuf(MAX_VOLUMES * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, HOST, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);

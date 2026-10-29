@@ -11,7 +11,7 @@
 
 // hills and mountains toward the horizon (terrain.h farRelief)
 const float RELIEF_START = 3000.0, RELIEF_FULL = 5500.0, RELIEF_HEIGHT = 420.0;
-const float RELIEF_VALLEY = 60.0, RELIEF_VALLEY_WIDE = 700.0, RELIEF_SCALE = 1800.0;
+const float RELIEF_VALLEY = 30.0, RELIEF_VALLEY_WIDE = 300.0, RELIEF_SCALE = 1800.0;
 float farRelief(vec2 p) {
     float r2 = dot(p, p);
     if (r2 <= RELIEF_START * RELIEF_START) return 0.0;

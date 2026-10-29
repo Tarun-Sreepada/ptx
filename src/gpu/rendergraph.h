@@ -45,6 +45,10 @@ public:
     void execute(const std::vector<VkCommandBuffer>& firstCbs, VkSemaphore acquire, VkPipelineStageFlags2 waitStage, const char* presentPass,
                  VkSemaphore renderDone, VkFence fence);
 
+    // GPU timing inside a pass (call from its record callback; zones may not nest). Shows up as "pass/name".
+    void zoneBegin(VkCommandBuffer cb, const char* name);
+    void zoneEnd(VkCommandBuffer cb);
+
     const std::vector<PassTiming>& timings() const { return lastTimings; }
     float frameMs() const { return lastFrameMs; }
     float passMs(const char* prefix) const;  // sum of passes whose name starts with prefix
@@ -73,7 +77,12 @@ private:
     VkSemaphore timeline[QUEUE_COUNT] = {};
     uint64_t timelineValue[QUEUE_COUNT] = {};
     VkQueryPool queries = VK_NULL_HANDLE;
-    static constexpr uint32_t MAX_PASSES = 64;
+    static constexpr uint32_t MAX_PASSES = 64, MAX_ZONES = 32;
+    VkQueryPool zoneQueries = VK_NULL_HANDLE;
+    uint32_t zq = 0;
+    uint64_t t0 = 0;  // last frame's first pass timestamp (zones are placed relative to it)
+    const Pass* curPass = nullptr;
+    std::vector<std::pair<std::string, Queue>> lastZones;
     float tsPeriod = 1.f;
     void* tracyCtx[QUEUE_COUNT] = {};  // tracy::VkCtx*, null without Tracy
 

@@ -56,7 +56,9 @@ uint32_t W = 1920, H = 1080;   // render resolution (what rays are traced at)
 
 uint32_t OW = 1920, OH = 1080; // output resolution (DLSS-RR upscales W x H to this; equal without it)
 
-dlss::Mode upscaler = dlss::QUALITY;
+// Performance: half the output resolution per axis. Measured 2026-10-29 (RTX 3070, 1080p): ~8 ms a frame faster
+// than Quality, since every traced pass scales with the render resolution, and DLSS-RR still resolves it cleanly.
+dlss::Mode upscaler = dlss::PERFORMANCE;
 
 bool rrActive = false;         // upscaler != OFF and the feature was created
 

@@ -1,0 +1,41 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_GOOGLE_include_directive : require
+#include "core/frame.glsl"
+#include "materials/model.glsl"
+#include "scene/cull.glsl"
+#include "scene/meshlet.glsl"
+
+// Trees and plants as meshlets (render/veg_gpu.cpp): one task workgroup per (visible instance, run of 32 of its
+// meshlets). gl_DrawID is the bucket (variant); the instance is the n-th that vegcull.comp kept, its transform in
+// modelXf at the bucket's first slot + n. Each thread tests one meshlet's bounding sphere (frustum, then last
+// frame's occlusion grid, under a pixel) and the survivors are packed with a ballot into the payload for raster_model.mesh.
+layout(local_size_x = 32) in;
+
+taskPayloadSharedEXT MeshletPayload pl;
+
+void main() {
+    uvec4 bk = vegBuckets[gl_DrawID];  // first meshlet, count, task groups per instance, flags (uint offset in cmd)
+    uint n = gl_WorkGroupID.x / bk.z, chunk = gl_WorkGroupID.x % bk.z;
+    uint inst = vegCmd[gl_DrawID * 5u + 4u] + n;
+    uint m = chunk * 32u + gl_LocalInvocationID.x;
+    bool vis = m < bk.y;
+    if (vis) {
+        uint b = inst * 4u;
+        mat3x4 xf = mat3x4(modelXf[b], modelXf[b + 1u], modelXf[b + 2u]);
+        vec4 s = meshletSphere(bk.x + m);
+        vec3 c = vec4(s.xyz, 1.0) * xf;
+        float sc = max(length(xf[0].xyz), max(length(xf[1].xyz), length(xf[2].xyz)));
+        // the wind moves plants off their rest pose (sway.glsl): grow the sphere by a share of the plant's height
+        float r = s.w * sc + max(modelXf[b + 3u].z, 0.0) * 0.12;
+        // under a pixel across: nothing of it would show
+        float d = length(c - F.camPos.xyz), px = r / max(d - r, 1e-3) * float(F.res.y) / F.camUp.w;
+        vis = px > 0.5 && inFrustum(c, r) && !occluded(c, r, vegCmd[bk.w] != 0u);
+    }
+    uvec4 bal = subgroupBallot(vis);
+    uint idx = subgroupBallotExclusiveBitCount(bal), cnt = subgroupBallotBitCount(bal);
+    if (vis) pl.ids[idx] = bk.x + m;
+    if (gl_LocalInvocationID.x == 0u) pl.inst = inst;
+    EmitMeshTasksEXT(cnt, 1, 1);
+}

@@ -79,8 +79,11 @@ void main() {
     // Squares of F.settings.w >> 16 pixels: 8 and up skip whole 8x8 workgroups (a warp with half its lanes idle
     // costs as much as a full one), finer squares look smoother but save little time.
     uvec2 tile = gl_WorkGroupID.xy;
-    uvec2 cell = uvec2(p) / max(F.settings.w >> 16u, 1u);
-    bool skip = restir && (F.settings.z & FLAG_GI_CHECKER) != 0u && ((cell.x + cell.y + F.res.z) & 1u) == 1u;
+    // Quarter rate (bit 24): one cell of each 2 x 2 is traced per frame, the four in turn.
+    uvec2 cell = uvec2(p) / max((F.settings.w >> 16u) & 0xffu, 1u);
+    bool quarter = ((F.settings.w >> 24u) & 1u) != 0u;
+    uint phase = quarter ? ((cell.x & 1u) + 2u * (cell.y & 1u) + F.res.z) & 3u : (cell.x + cell.y + F.res.z) & 1u;
+    bool skip = restir && (F.settings.z & FLAG_GI_CHECKER) != 0u && phase != 0u;
     rcTrain = rcHash(tile.x * 73856093u ^ tile.y * 19349663u ^ F.res.z * 83492791u) % RC_TRAIN == 0u;
     uint N = isBaked || skip ? 0u : max(F.settings.x, 1u);
     vec3 gl = vec3(0), gW = vec3(0);

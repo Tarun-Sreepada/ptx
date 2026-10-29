@@ -1,4 +1,6 @@
 #include "scene/placement/placement.h"
+#include "render/veg_gpu.h"
+#include "world/biome.h"
 
 #include <vector>
 #include <string>
@@ -69,7 +71,7 @@ void placeScene() {
     // rock is kept while it covers >= ~1.5 output pixels (screen-size LOD), so big boulders stay visible across the
     // field and only rocks too small to resolve drop out, where the pop is invisible.
     const float RR = S.viewDist;
-    const float pixAngle = 2.f * tanf(cam.fovDeg * 0.5f * 3.14159265f / 180.f) / (float)OH, keepPx = 1.5f;
+    const float pixAngle = 2.f * tanf(cam.fov() * 0.5f * 3.14159265f / 180.f) / (float)OH, keepPx = 1.5f;
     // Placement is ~70k grid cells of noise + height lookups (several ms): redo it only after moving 2 m or a
     // world / setting change. The TLAS instances and raster transforms stay valid in their buffers meanwhile.
     static V3 placedAt{1e9f, 0, 0};
@@ -90,4 +92,12 @@ void placeScene() {
     placeRocks(c);
     placeTrees(c);
     placePlants(c);
+    uploadVegInstances();
+}
+
+float habitatAt(float x, float z, bool tree, float& y) {
+    const float e = 1.5f;
+    y = heightFn(x, z);
+    float sx = heightFn(x + e, z) - y, sz = heightFn(x, z + e) - y;
+    return vegHabitat(y, sqrtf(sx * sx + sz * sz) / e, tree);
 }

@@ -35,9 +35,9 @@ template <class T> constexpr char typeOf() {
 
 // every Settings field but the debug view mode
 const Field SETTINGS_FIELDS[] = {
-    SF(raysFirst), SF(bounces), SF(rasterPrimary), SF(occlusionCull), SF(worldSeed), SF(hilliness), SF(riverWidthVar), SF(riverBraids), SF(riverTribs), SF(godRays), SF(cloudDiv), SF(restir), SF(restirTemporal), SF(restirSpatial),
+    SF(raysFirst), SF(bounces), SF(rasterPrimary), SF(occlusionCull), SF(gpuCull), SF(meshShaders), SF(worldSeed), SF(hilliness), SF(riverWidthVar), SF(riverBraids), SF(riverTribs), SF(godRays), SF(cloudDiv), SF(restir), SF(restirTemporal), SF(restirSpatial),
     SF(candidates), SF(spatialSamples), SF(spatialRadius), SF(restirGI), SF(giTemporal), SF(giSpatial),
-    SF(giEnabled), SF(giCache), SF(giChecker), SF(giCheckerCell), SF(giProbes), SF(giSpatialSamples), SF(giRadius),
+    SF(giEnabled), SF(giCache), SF(giChecker), SF(giCheckerCell), SF(giQuarter), SF(giProbes), SF(giSpatialSamples), SF(giRadius),
     SF(giMaxM), SF(accumulate), SF(denoise), SF(historyMax), SF(atrousIters), SF(fireflyClamp),
     SF(sunElev), SF(sunAzim), SF(sunIntensity), SF(sunRadiusDeg), SF(skyIntensity), SF(fogScale),
     SF(dayCycle), SF(timeOfDay), SF(dayMinutes), SF(dayOfYear), SF(weatherCycle), SF(weatherChange),
@@ -50,7 +50,7 @@ const Field SETTINGS_FIELDS[] = {
     SF(grassWidth), SF(grassCurve), SF(grassTwist), SF(grassTilt), SF(grassHeightVar), SF(grassDead),
     SF(grassColorVar), SF(groundWarp), SF(groundMottle), SF(groundMottleScale), SF(darkSpots), SF(darkSpotSize),
     SF(groundGrit), SF(groundCavity), SF(tileBreakup), SF(groundSat), SF(bushAmount), SF(berryShare),
-    SF(fovMargin), SF(keepRadius), SF(offscreenDensity), SF(headBob), SF(wildlife), SF(critters), SF(ambience), SF(grassDensity), SF(grassLength), SF(lodStart),
+    SF(fovMargin), SF(keepRadius), SF(offscreenDensity), SF(headBob), SF(walkSpeed), SF(maxSpeed), SF(speedUncapped), SF(speedFov), SF(wildlife), SF(critters), SF(ambience), SF(grassDensity), SF(grassLength), SF(lodStart),
     SF(drawDist), SF(craterInflow), SF(riverRainRise), SF(groundFriction), SF(groundBounce), SF(worldSim),
     SF(snowFollowsClouds), SF(snowLine), SF(snowfall), SF(meltRate), SF(reposeDeg), SF(avalanche),
     SF(riverRange), SF(dryRate), SF(waterMobility), SF(mapTexTile), SF(simSpeed), SF(snowMeshEvery),

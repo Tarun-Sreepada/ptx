@@ -17,3 +17,5 @@ void createOcclusionBuffer();
 void beginOcclusion(V3 camPos);
 // True when the sphere is certainly behind what last frame drew (counts it in occCulled).
 bool occluded(V3 c, float r);
+// This frame has a grid to test against (camera close enough to where it was made).
+bool occlusionValid();

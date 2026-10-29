@@ -45,4 +45,7 @@ extern PFN_vkGetAccelerationStructureDeviceAddressKHR pGetASAddr;
 
 extern PFN_vkDestroyAccelerationStructureKHR pDestroyAS;
 
+extern PFN_vkCmdDrawMeshTasksIndirectEXT pCmdDrawMeshTasksIndirect;
+extern bool hasMeshShaders;  // VK_EXT_mesh_shader with task + mesh stages
+
 void initVulkan(bool validate);

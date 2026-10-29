@@ -15,6 +15,7 @@
 #include "vegetation/trees.h"
 #include "world/worldmap.h"
 #include "world/terrain.h"
+#include "world/biome.h"
 #include "world/world.h"
 #include "app/frame_state.h"
 #include "app/settings.h"
@@ -135,7 +136,10 @@ void placeTrees(const PlacementCtx& c) {
             float far = std::min(RR, 2.f * treeR[v] * sc / (pixAngle * 2.f));
             if ((x - cam.pos.x) * (x - cam.pos.x) + (z - cam.pos.z) * (z - cam.pos.z) > far * far) return false;
             if (zoneCover(x, z, zs.data(), (int)zs.size()) > 0.f || riverDry(x, z, 2.5f) == 0.f || inCrater(x, z, 0.f)) return false;  // not in town / water / craters
-            float yaw = hash2(ix + 3, iz + 9) * 6.2831853f, c = cosf(yaw) * sc, sn = sinf(yaw) * sc, y = heightFn(x, z) - 0.05f;
+            float y;
+            if (hash2(ix + 613, iz + 29) >= habitatAt(x, z, true, y)) return false;  // above the tree line / too steep
+            y -= 0.05f;
+            float yaw = hash2(ix + 3, iz + 9) * 6.2831853f, c = cosf(yaw) * sc, sn = sinf(yaw) * sc;
             float m[3][4] = {{c, 0, sn, x}, {0, sc, 0, y}, {-sn, 0, c, z}};
             memcpy(pl.m, m, sizeof m);
             pl.t = {{x, y, z}, yaw, sc, v, ix, iz};

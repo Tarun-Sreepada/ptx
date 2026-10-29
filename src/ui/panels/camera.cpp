@@ -127,5 +127,9 @@ void panelCameraMovement() {
     ui::TextDisabled("RMB + mouse: look   WASD/QE: move   Shift: fast   Ctrl: turbo (fly)   F: walk/fly   Space: jump");
     ui::SliderFloat("Fly speed", &flySpeed, 0.25f, 20.f, "%.2fx", ImGuiSliderFlags_Logarithmic);
     ui::SliderFloat("Head bob (walking)", &S.headBob, 0.f, 1.5f, "%.2f");
+    ui::SliderFloat("Walk speed", &S.walkSpeed, 1.f, 30.f, "%.1f m/s (Shift: 2x)", ImGuiSliderFlags_Logarithmic);
+    ui::Checkbox("Uncapped speed", &S.speedUncapped);
+    if (!S.speedUncapped) { ui::SameLine(); ui::SliderFloat("Max speed (bunny hops)", &S.maxSpeed, 5.f, 300.f, "%.0f m/s", ImGuiSliderFlags_Logarithmic); }
+    ui::SliderFloat("Speed FOV", &S.speedFov, 0.f, 40.f, "+%.0f deg at max speed");
 
 }

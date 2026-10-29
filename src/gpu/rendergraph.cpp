@@ -48,6 +48,9 @@ void Graph::init(VkPhysicalDevice phys, VkDevice d, const QueueInfo q[QUEUE_COUN
     qi.queryCount = MAX_PASSES * 2;
     RG_CHECK(vkCreateQueryPool(dev, &qi, nullptr, &queries));
     vkResetQueryPool(dev, queries, 0, MAX_PASSES * 2);
+    qi.queryCount = MAX_ZONES * 2;
+    RG_CHECK(vkCreateQueryPool(dev, &qi, nullptr, &zoneQueries));
+    vkResetQueryPool(dev, zoneQueries, 0, MAX_ZONES * 2);
 #ifdef TRACY_ENABLE
     for (int i = 0; i < QUEUE_COUNT; i++) {
         if (i > 0 && q[i].queue == q[GFX].queue) break;  // no async queue: one context
@@ -77,6 +80,19 @@ void Graph::destroy() {
         vkDestroySemaphore(dev, timeline[i], nullptr);
     }
     vkDestroyQueryPool(dev, queries, nullptr);
+    vkDestroyQueryPool(dev, zoneQueries, nullptr);
+}
+
+void Graph::zoneBegin(VkCommandBuffer cb, const char* name) {
+    if (!curPass || zq + 2 > MAX_ZONES * 2) return;
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, zoneQueries, zq);
+    lastZones.push_back({curPass->name + "/" + name, curPass->q});
+}
+
+void Graph::zoneEnd(VkCommandBuffer cb) {
+    if (!curPass || zq + 2 > MAX_ZONES * 2 || lastZones.size() * 2 != zq + 2) return;
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, zoneQueries, zq + 1);
+    zq += 2;
 }
 
 void Graph::begin() {
@@ -84,7 +100,8 @@ void Graph::begin() {
     if (!lastPasses.empty()) {
         std::vector<uint64_t> t(lastPasses.size() * 2);
         if (vkGetQueryPoolResults(dev, queries, 0, (uint32_t)t.size(), t.size() * 8, t.data(), 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-            uint64_t t0 = UINT64_MAX, t1 = 0;
+            uint64_t t1 = 0;
+            t0 = UINT64_MAX;
             for (size_t i = 0; i < lastPasses.size(); i++) { t0 = std::min(t0, t[2 * i]); t1 = std::max(t1, t[2 * i + 1]); }
             float ms = tsPeriod * 1e-6f;
             lastTimings.clear();
@@ -94,6 +111,17 @@ void Graph::begin() {
         }
         vkResetQueryPool(dev, queries, 0, (uint32_t)lastPasses.size() * 2);
     }
+    if (zq) {  // zones inside passes, on the passes' clock (t0: the frame's first timestamp)
+        std::vector<uint64_t> t(zq);
+        if (vkGetQueryPoolResults(dev, zoneQueries, 0, zq, t.size() * 8, t.data(), 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+            float ms = tsPeriod * 1e-6f;
+            for (size_t i = 0; i < zq / 2; i++)
+                lastTimings.push_back({lastZones[i].first, lastZones[i].second, t[2 * i] > t0 ? (t[2 * i] - t0) * ms : 0.f, (t[2 * i + 1] - t[2 * i]) * ms});
+        }
+        vkResetQueryPool(dev, zoneQueries, 0, zq);
+    }
+    zq = 0;
+    lastZones.clear();
     for (auto& c : cbUsed) c = 0;
     passes.clear();
 }
@@ -224,7 +252,10 @@ void Graph::execute(const std::vector<VkCommandBuffer>& firstCbs, VkSemaphore ac
             tracy::VkCtx* tc = (tracy::VkCtx*)tracyCtx[tracyCtx[p.q] ? p.q : GFX];
             TracyVkZoneTransient(tc, tz, cb, p.name.c_str(), tc != nullptr);
 #endif
+            curPass = &p;
             p.record(cb);
+            curPass = nullptr;
+            if (lastZones.size() * 2 > zq) lastZones.pop_back();  // a zone left open: drop it
         }
         if (labelEnd) labelEnd(cb);
         if (timed) {

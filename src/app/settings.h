@@ -5,10 +5,12 @@
 struct Settings {
     int raysFirst = 1, bounces = 2;
     bool rasterPrimary = true;
-    bool occlusionCull = true;
+    bool occlusionCull = true;  // skip raster draws hidden behind last frame's depth (render/occlusion.h)
+    bool gpuCull = true;        // trees, plants and rocks culled on the GPU, drawn indirect (render/veg_gpu)
+    bool meshShaders = true;    // trees and plants as culled meshlets (needs gpuCull and VK_EXT_mesh_shader)
     // world generation (terrain.h gWorld / gRiver): the seed drives the ground, hills, rivers, trees, plants, rocks, dirt
     int worldSeed = 0;
-    float hilliness = 0.35f, riverWidthVar = 0.6f, riverBraids = 0.45f, riverTribs = 0.5f;  // skip raster draws hidden behind last frame's depth (render/occlusion.h)
+    float hilliness = 0.35f, riverWidthVar = 0.6f, riverBraids = 0.45f, riverTribs = 0.5f;
     bool restir = true, restirTemporal = true, restirSpatial = true;
     int candidates = 16, spatialSamples = 4;
     float spatialRadius = 20.f;
@@ -16,6 +18,7 @@ struct Settings {
     bool giEnabled = true;  // off: direct light only (I key)
     bool giCache = true;     // radiance cache ends paths after the first secondary hit (radcache.glsl)
     bool giChecker = true;   // new GI candidates in half the pixels per frame (ReSTIR GI fills the rest)
+    bool giQuarter = true;   // checkerboard GI at a quarter: 1 cell in each 2 x 2 traced per frame, in turn (~4 ms saved)
     int giCheckerCell = 8;   // checkerboard square size (px): 8+ skips whole warps (saves time), smaller looks finer
     bool giProbes = true;    // secondary hits in baked volumes read the probes
     int giSpatialSamples = 4;
@@ -55,6 +58,10 @@ struct Settings {
     float groundGrit = 1.f, groundCavity = 1.f, tileBreakup = 1.f, groundSat = 1.f;
     float bushAmount = 1.f, berryShare = 0.35f;  // bushes per forest edge / meadow, fraction of them berry bushes
     float fovMargin = 20.f, keepRadius = 5.f, offscreenDensity = 0.2f;
+    float walkSpeed = 3.5f;   // m/s on foot (sprint: twice)
+    float maxSpeed = 30.f;    // m/s: bunny hops gain less and less approaching it (sigmoid), never pass it
+    bool speedUncapped = false;
+    float speedFov = 20.f;    // deg added to the FOV at maxSpeed (sigmoid in speed; 0 = off)
     float headBob = 0.5f;  // walking: the eye dips at each footfall and sways a little (0 = off)
     bool wildlife = true, critters = true, ambience = true;  // foxes; birds / butterflies / fireflies; birdsong, crickets, river
     float grassDensity = 120.f, grassLength = 1.f, lodStart = 8.f, drawDist = 60.f;
@@ -93,7 +100,7 @@ struct Settings {
     bool fog = true, fogLights = true;               // volumetric fog / god rays (volfog.comp)
     int fogDiv = 8;                                  // fog resolution = render resolution / fogDiv (1..128)
     bool godRays = true;                             // fog steps take a shadow ray to the sun (off: evenly lit fog, cheaper)
-    int cloudDiv = 2;                                // sky clouds resolution = render resolution / cloudDiv (cloud.comp)
+    int cloudDiv = 4;                                // sky clouds resolution = render resolution / cloudDiv (cloud.comp; 2 -> 4: ~1 ms)
     float fogDensity = 0.0007f, fogFalloff = 0.08f, fogAniso = 0.6f, fogNoise = 0.6f, fogDist = 150.f, fogBlend = 0.12f;
     float rain = 0.f, wetness = 0.f, puddles = 0.f;  // puddles: the old noise-placed ones; the world sim makes real ones  // weather (surface_fx.comp, post.comp)
     bool rainWets = true;                            // wetness follows the rain (dries slowly after)

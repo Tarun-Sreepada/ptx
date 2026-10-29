@@ -5,6 +5,8 @@
 #include "destruction/thrown.h"
 #include "gpu/pipelines.h"
 #include "render/targets.h"
+#include "render/veg_gpu.h"
+#include "render/frame_graph.h"
 #include "scene/model_instances.h"
 #include "scene/models.h"
 #include "scene/scene_gpu.h"
@@ -52,20 +54,21 @@ void rasterGBuffer(VkCommandBuffer cb) {
     vkCmdSetScissor(cb, 0, 1, &sc);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 1, &descSet, 0, nullptr);
     VkDeviceSize off = 0;
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterTerrain);
-    vkCmdBindVertexBuffers(cb, 0, 1, &terrainV.b, &off);
-    vkCmdBindIndexBuffer(cb, terrainI.b, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cb, terrainTris * 3, 1, 0, 0, 0);
+    graph.zoneBegin(cb, "grass");
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterGrass);
     vkCmdBindVertexBuffers(cb, 0, 1, &grassV.b, &off);
     vkCmdBindIndexBuffer(cb, grassI.b, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexedIndirect(cb, grassCounter.b, 4, 1, 0); // blade count from grass_tail.comp
+    graph.zoneEnd(cb);
+    graph.zoneBegin(cb, "rocks");
     if (numRocks + numThrownRock) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterRock);
         vkCmdBindVertexBuffers(cb, 0, 1, &rockV.b, &off);
         vkCmdBindIndexBuffer(cb, rockI.b, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cb, rockTris * 3, numRocks + numThrownRock, 0, 0, 0);
+        drawRocks(cb);
     }
+    graph.zoneEnd(cb);
+    graph.zoneBegin(cb, "models");
     if (!drawRuns.empty()) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterModel);
         GpuModel* bound = nullptr;
@@ -75,9 +78,29 @@ void rasterGBuffer(VkCommandBuffer cb) {
             vkCmdDrawIndexed(cb, gm.indexCount, r.count, gm.firstIndex, 0, r.first);
         }
     }
-    if (numImpostors) {
+    graph.zoneEnd(cb);
+    graph.zoneBegin(cb, "trees + plants");
+    if (vegGpuOn()) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterModel);
+        drawVegModels(cb);
+    }
+    graph.zoneEnd(cb);
+    graph.zoneBegin(cb, "impostors");
+    if (vegGpuOn()) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterImpostor);
+        drawVegImpostors(cb);
+    } else if (numImpostors) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterImpostor);
         vkCmdDraw(cb, 6, numImpostors, 0, 0);
     }
+    graph.zoneEnd(cb);
+    // the ground last: its shading is the most expensive here (ground detail, craters, parallax), and grass, rocks
+    // and trees drawn first cover much of it, so early depth testing skips those pixels instead of shading them
+    graph.zoneBegin(cb, "terrain");
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterTerrain);
+    vkCmdBindVertexBuffers(cb, 0, 1, &terrainV.b, &off);
+    vkCmdBindIndexBuffer(cb, terrainI.b, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cb, terrainTris * 3, 1, 0, 0, 0);
+    graph.zoneEnd(cb);
     vkCmdEndRendering(cb);
 }

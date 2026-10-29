@@ -1,0 +1,51 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+#include "scene/cull.glsl"
+
+// GPU vegetation culling (render/veg_gpu.cpp): one thread per placed tree / plant. Frustum test, then the
+// occlusion grid from last frame (render/occlusion.cpp occluded(), same rules), then: near trees and plants get a
+// raster transform in their bucket's run of modelXf and bump its indirect draw's instance count; trees past
+// impostorDist (with the 20 m crossfade band drawing both) get an impostor. Push: count, impostorDist, occlusion on.
+// pc (common.glsl): a count, b impostorDist (float bits), c occlusion grid valid, d the impostor draw (uint offset in cmd)
+layout(local_size_x = 64) in;
+
+layout(binding = 35, std430) buffer ModelXfW { vec4 xfOut[]; };
+layout(binding = 44, std430) buffer ImpInstW { vec4 impOut[]; };
+layout(binding = 107, std430) buffer VegCmd { uint cmd[]; };
+layout(binding = 108, std430) readonly buffer VegInst { vec4 rec[]; };
+layout(binding = 112, std430) readonly buffer VegBuckets { uvec4 vegBuckets[]; };  // (scene/meshlet.glsl)
+
+const uint CMD_UINTS = 5u;
+const float BAND = 20.0;  // m: the impostor crossfade
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.a) return;
+    uint b = i * 6u;
+    vec4 r0 = rec[b], r1 = rec[b + 1u], r2 = rec[b + 2u], r3 = rec[b + 3u], sph = rec[b + 4u];
+    uint kb = floatBitsToUint(r3.w);
+    bool tree = (kb & 0x80000000u) != 0u;
+    uint k = kb & 0xffffu;
+    if (!inFrustum(sph.xyz, sph.w) || occluded(sph.xyz, sph.w, pc.c != 0u)) return;
+    float fade = tree ? clamp((length(sph.xyz - F.camPos.xyz) - uintBitsToFloat(pc.b)) / BAND, 0.0, 1.0) : 0.0;
+    if (fade < 1.0) {
+        uint n = atomicAdd(cmd[k * CMD_UINTS + 1u], 1u);
+        uvec4 bk = vegBuckets[k];  // mesh shading: this instance's task groups (raster_model.task); flags[1] = where those draws are
+        if (cmd[bk.w + 2u] != 0u) atomicAdd(cmd[cmd[bk.w + 1u] + k * 3u], bk.z);
+        uint slot = cmd[k * CMD_UINTS + 4u] + n;  // (firstInstance: the bucket's run, set by the template)
+        uint o = slot * 4u, po = uint(xfOut.length()) / 2u + o;
+        vec4 r3o = vec4(r3.x, fade, r3.y, r3.z);
+        xfOut[o] = r0; xfOut[o + 1u] = r1; xfOut[o + 2u] = r2; xfOut[o + 3u] = r3o;
+        xfOut[po] = r0; xfOut[po + 1u] = r1; xfOut[po + 2u] = r2; xfOut[po + 3u] = vec4(r3.x, 0.0, 0.0, 0.0);  // static: last frame's = this one
+    }
+    if (tree && fade > 0.0) {
+        uint n = atomicAdd(cmd[pc.d + 1u], 1u);
+        vec4 lc = rec[b + 5u];
+        float sc = r1.y;
+        uint o = n * 3u;
+        impOut[o] = vec4(r0.w, r1.w, r2.w, sc);
+        impOut[o + 1u] = vec4(lc.w, uintBitsToFloat(k), fade, 0.0);
+        impOut[o + 2u] = vec4(lc.xyz, sph.w / sc);
+    }
+}

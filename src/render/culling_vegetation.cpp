@@ -14,6 +14,7 @@
 #include "destruction/tree_damage.h"
 #include "render/culling.h"
 #include "render/occlusion.h"
+#include "render/veg_gpu.h"
 #include "scene/camera.h"
 #include "scene/characters.h"
 #include "scene/model_instances.h"
@@ -22,7 +23,6 @@
 #include "sim/critters.h"
 #include "sim/debris.h"
 
-namespace {
 // how much each plant gives to the wind (sway.glsl: integer part of the phase); -1 = rigid ground clutter
 int plantFlex(int v) {
     switch (v) {
@@ -35,6 +35,7 @@ int plantFlex(int v) {
 }
 float swayPhase(float x, float z) { return hash2((int)floorf(x * 3.f), (int)floorf(z * 3.f)) * 0.999f; }
 
+namespace {
 // indices of list sorted by .v (counting sort: stable, linear); variants >= n are left out
 template <class T> void bucketByVariant(const std::vector<T>& list, uint32_t n, std::vector<uint32_t>& order) {
     static std::vector<uint32_t> start;
@@ -53,6 +54,8 @@ void cullTrees() {
     PROF_FUNC();
     numTreeNear = numImpostors = 0;
     if (!S.rasterPrimary) return;
+    bool gpu = vegGpuOn();  // trees and plants: vegcull.comp (render/veg_gpu); the moving things below stay here
+    if (gpu) readVegStats();
     auto* g = (GpuModel*)treeModel.gpu;
     float planes[5][4];
     frustumPlanes(planes);
@@ -63,7 +66,7 @@ void cullTrees() {
     // instances grouped by variant in one pass (an instanced run per variant), not a pass over the list per variant
     static std::vector<uint32_t> order;
     bucketByVariant(treeList, (uint32_t)numTreeVariants, order);
-    for (uint32_t v = 0, oi = 0; v < (uint32_t)numTreeVariants; v++) {
+    for (uint32_t v = 0, oi = 0; !gpu && v < (uint32_t)numTreeVariants; v++) {
         uint32_t runStart = numModelVisible;
         for (; oi < order.size() && treeList[order[oi]].v == v; oi++) {
             const TreeInst& t = treeList[order[oi]];
@@ -93,13 +96,13 @@ void cullTrees() {
         }
         if (numModelVisible > runStart) drawRuns.push_back({g, v, runStart, numModelVisible - runStart});
     }
-    numTreeNear = numModelVisible - first;
+    if (!gpu) numTreeNear = numModelVisible - first;
 
     // plants: always the real mesh (they're placed only where they still cover a few pixels)
     auto* pg = (GpuModel*)plantModel.gpu;
     first = numModelVisible;
     bucketByVariant(plantList, (uint32_t)trees::PLANT_VARIANTS, order);
-    for (uint32_t v = 0, oi = 0; pg && v < (uint32_t)trees::PLANT_VARIANTS; v++) {
+    for (uint32_t v = 0, oi = 0; !gpu && pg && v < (uint32_t)trees::PLANT_VARIANTS; v++) {
         uint32_t runStart = numModelVisible;
         for (; oi < order.size() && plantList[order[oi]].v == v; oi++) {
             const PlantInst& p = plantList[order[oi]];
@@ -121,7 +124,7 @@ void cullTrees() {
         }
         if (numModelVisible > runStart) drawRuns.push_back({pg, v, runStart, numModelVisible - runStart});
     }
-    numPlantsDrawn = numModelVisible - first;
+    if (!gpu) numPlantsDrawn = numModelVisible - first;
 
     // moving things, every frame: debris particles (one run per kind), fragments and stumps (a run each)
     auto push = [&](GpuModel* gm, uint32_t mesh, const float m[3][4], const float (*prev)[4] = nullptr) {

@@ -10,6 +10,7 @@
 #include "core/limits.h"
 #include "core/math.h"
 #include "render/occlusion.h"
+#include "render/veg_gpu.h"
 #include "render/targets.h"
 #include "scene/camera.h"
 #include "scene/model_instances.h"
@@ -17,7 +18,7 @@
 
 // Frustum-cull model instances (AVX2), write raster transforms, group consecutive same-mesh items into instanced draws.
 void frustumPlanes(float planes[5][4]) {
-    float th = tanf(cam.fovDeg * 0.5f * 3.14159265f / 180.f), aspect = (float)W / H;
+    float th = tanf(cam.fov() * 0.5f * 3.14159265f / 180.f), aspect = (float)W / H;
     V3 f = cam.fwd(), r = cam.right(), u = cam.up();
     V3 edges[4][2] = {{f + r * (th * aspect), u}, {f - r * (th * aspect), u}, {f + u * th, r}, {f - u * th, r}};
     for (int i = 0; i < 4; i++) {
@@ -34,7 +35,7 @@ void frustumPlanes(float planes[5][4]) {
 static std::vector<uint8_t> prevSet(MAX_MODEL_INST, 0);
 
 void setPrevXf(uint32_t k, const float m[3][4], uint32_t prevSlot) {
-    float* d = (float*)modelXfBuf.map + MAX_MODEL_INST * 16 + (size_t)k * 16;
+    float* d = (float*)modelXfBuf.map + XF_SLOTS * 16 + (size_t)k * 16;
     memcpy(d, m, 48);
     memcpy(d + 12, &prevSlot, 4);
     d[13] = d[14] = d[15] = 0;
@@ -44,7 +45,7 @@ void setPrevXf(uint32_t k, const float m[3][4], uint32_t prevSlot) {
 void finishPrevXf() {
     const float* cur = (const float*)modelXfBuf.map;
     for (uint32_t k = 0; k < numModelVisible; k++) {
-        if (!prevSet[k]) memcpy((float*)modelXfBuf.map + MAX_MODEL_INST * 16 + (size_t)k * 16, cur + (size_t)k * 16, 64);
+        if (!prevSet[k]) memcpy((float*)modelXfBuf.map + XF_SLOTS * 16 + (size_t)k * 16, cur + (size_t)k * 16, 64);
         prevSet[k] = 0;
     }
 }

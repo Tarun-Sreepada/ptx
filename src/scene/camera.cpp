@@ -16,7 +16,6 @@
 
 namespace {
 constexpr float EYE_HEIGHT = 1.65f;   // m above the feet
-constexpr float WALK_SPEED = 3.5f;    // m/s (sprint: twice)
 constexpr float STRIDE = 0.75f;       // m per step
 constexpr float BOB_DIP = 0.035f;     // m the eye drops at a footfall, at walking pace
 constexpr float BOB_SWAY = 0.012f;    // m it sways toward the planted foot
@@ -101,7 +100,7 @@ void updateCamera(float dt) {
     fPrev = fKey;
     if (walkMode) {
         // first person: horizontal wish velocity, physics resolves collisions, stairs and gravity
-        float spd = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) || gp.sprint) ? 2.f * WALK_SPEED : WALK_SPEED;
+        float spd = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) || gp.sprint) ? 2.f * S.walkSpeed : S.walkSpeed;
         V3 fw = normalize(V3{sinf(cam.yaw), 0, cosf(cam.yaw)}), rt = cam.right();
         V3 w{0, 0, 0};
         if (glfwGetKey(window, GLFW_KEY_W)) w = w + fw;
@@ -122,7 +121,7 @@ void updateCamera(float dt) {
         while (acc >= step) {
             bool wasGrounded = grounded;
             feetPrev = feetCur;
-            physics::movePlayer(step, wish, jump, &feetCur.x, grounded);
+            physics::movePlayer(step, wish, jump, walkMaxSpeed(), &feetCur.x, grounded);
             if (grounded && !wasGrounded) input::rumble(0.4f, 0.1f, 80);  // landing thump
             acc -= step;
             // clipped through the ground: once 50 m under the terrain, put the player back on top of it
@@ -146,13 +145,20 @@ void updateCamera(float dt) {
         V3 moved = playerFeet - lastFeet;
         lastFeet = playerFeet;
         float speed = sqrtf(moved.x * moved.x + moved.z * moved.z) / std::max(dt, 1e-4f);
-        bobAmp += ((grounded ? std::min(speed / WALK_SPEED, 2.f) : 0.f) - bobAmp) * (1.f - expf(-dt / 0.15f));
+        bobAmp += ((grounded ? std::min(speed / S.walkSpeed, 2.f) : 0.f) - bobAmp) * (1.f - expf(-dt / 0.15f));
         bobPhase += std::min(speed, 12.f) * dt / STRIDE * 3.14159265f;  // a dip per step, a sway per two
         float dip = -BOB_DIP * bobAmp * S.headBob * 0.5f * (1.f - cosf(2.f * bobPhase));
         float sway = BOB_SWAY * bobAmp * S.headBob * sinf(bobPhase);
         cam.pos = eye + V3{0, EYE_HEIGHT + dip, 0} + cam.right() * sway;
+        // speed widens the view: nothing at a jog, up to speedFov at the top speed (uncapped: at 60 m/s), along the
+        // same sigmoid, eased over ~0.2 s so a landing or a wall doesn't snap it
+        static float spdSmooth = 0.f;
+        spdSmooth += (speed - spdSmooth) * (1.f - expf(-dt / 0.2f));
+        float top = S.speedUncapped ? 60.f : S.maxSpeed, jog = 2.f * S.walkSpeed;
+        cam.fovBoost = top > jog ? S.speedFov * sigmoid01((spdSmooth - jog) / (top - jog)) : 0.f;
         return;
     }
+    cam.fovBoost = 0.f;
     float sp = ((glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) || gp.sprint) ? 12.f : 4.f) * flySpeed * dt;
     if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) sp *= 8.f;  // turbo: cross the map quickly
     V3 f = cam.fwd(), r = cam.right();
@@ -168,3 +174,5 @@ void updateCamera(float dt) {
     // the flying camera stays above the ground (craters, sculpted hills): no seeing through the terrain from inside
     cam.pos.y = std::max(cam.pos.y, heightFn(cam.pos.x, cam.pos.z) + 0.3f);
 }
+
+float walkMaxSpeed() { return S.speedUncapped ? 1e6f : std::max(S.maxSpeed, 1.f); }

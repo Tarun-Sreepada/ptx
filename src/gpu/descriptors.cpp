@@ -8,6 +8,7 @@
 #include "gpu/swapchain.h"
 #include "gpu/textures.h"
 #include "render/occlusion.h"
+#include "render/veg_gpu.h"
 #include "render/bake.h"
 #include "render/crater_bins.h"
 #include "render/ground_vt.h"
@@ -202,6 +203,7 @@ void writeDescriptors() {
     }
     vkUpdateDescriptorSets(dev, (uint32_t)w.size(), w.data(), 0, nullptr);
     writePresentDescriptors();
+    writeVegDescriptors();
 }
 
 void writePresentDescriptors() {

@@ -82,7 +82,7 @@ void addResolvePasses(const FrameGraphCtx& f) {
             V3 r = cam.right(), u = cam.up(), f = cam.fwd();
             float m[16] = {r.x, u.x, f.x, 0, r.y, u.y, f.y, 0, r.z, u.z, f.z, 0, -dot(r, cam.pos), -dot(u, cam.pos), -dot(f, cam.pos), 1};
             memcpy(in.worldToView, m, sizeof m);
-            float th = tanf(cam.fovDeg * 0.5f * 3.14159265f / 180.f), aspect = (float)W / H;
+            float th = tanf(cam.fov() * 0.5f * 3.14159265f / 180.f), aspect = (float)W / H;
             float pm[16] = {1.f / (th * aspect), 0, 0, 0, 0, 1.f / th, 0, 0, 0, 0, 0, 1, 0, 0, 0.05f, 0};
             memcpy(in.viewToClip, pm, sizeof pm);
             dlss::evaluate(cb, in);

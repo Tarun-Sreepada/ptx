@@ -1,0 +1,37 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+#include "scene/model_xform.glsl"
+#include "scene/meshlet.glsl"
+
+// One vegetation meshlet (raster_model.task picked it): the same per-vertex work as raster_model.vert, and each
+// triangle keeps its index in the mesh as gl_PrimitiveID, so raster_model.frag runs unchanged.
+layout(local_size_x = 32) in;
+layout(triangles, max_vertices = 64, max_primitives = 64) out;
+
+taskPayloadSharedEXT MeshletPayload pl;
+
+layout(location = 0) out vec3 oP[];
+layout(location = 1) out vec3 oN[];
+layout(location = 2) out vec2 oUV[];
+layout(location = 3) flat out uint oSlot[];
+layout(location = 4) flat out float oFade[];
+layout(location = 5) flat out uint oInst[];
+layout(location = 6) out vec3 oPrev[];
+layout(location = 7) out vec2 oSway[];
+
+void main() {
+    uvec4 ml = meshlets[2u * pl.ids[gl_WorkGroupID.x]];
+    uint nv = ml.y & 0xffu, nt = ml.y >> 8u;
+    SetMeshOutputsEXT(nv, nt);
+    for (uint v = gl_LocalInvocationID.x; v < nv; v += 32u) {
+        ModelOut o = modelXform(pl.inst, meshletData[ml.x + v], true);
+        oP[v] = o.P; oN[v] = o.N; oUV[v] = o.uv; oSlot[v] = o.slot; oFade[v] = o.fade; oInst[v] = pl.inst; oPrev[v] = o.prev; oSway[v] = o.sway;
+        gl_MeshVerticesEXT[v].gl_Position = project(o.P);
+    }
+    for (uint t = gl_LocalInvocationID.x; t < nt; t += 32u) {
+        uint c = meshletData[ml.w + t];
+        gl_PrimitiveTriangleIndicesEXT[t] = uvec3(c & 0xffu, (c >> 8u) & 0xffu, (c >> 16u) & 0xffu);
+        gl_MeshPrimitivesEXT[t].gl_PrimitiveID = int(meshletData[ml.z + t]);  // its index in the mesh
+    }
+}

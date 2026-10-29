@@ -158,7 +158,7 @@ inline float hills(float x, float z) {
     if (gWorld.hilliness <= 0.f) return 0.f;
     float n = vnoise(x * 0.0035f + 101.f, z * 0.0035f - 57.f) * 0.6f + vnoise(x * 0.009f - 13.f, z * 0.009f + 29.f) * 0.3f +
               vnoise(x * 0.024f + 7.f, z * 0.024f + 3.f) * 0.1f;
-    float e = riverEdgeDist(x, z), t = std::clamp((e - 20.f) / 220.f, 0.f, 1.f);
+    float e = riverEdgeDist(x, z), t = std::clamp((e - 6.f) / 60.f, 0.f, 1.f);
     return gWorld.hilliness * HILL_HEIGHT * n * n * t * t * (3.f - 2.f * t);
 }
 // Rocks in the channel, one candidate per RIVER_ROCK_L stretch. Deterministic so the water shader (riverRock) knows where
@@ -232,7 +232,7 @@ inline float applyZones(float x, float z, float h, const Zone* zones, int nz) {
 // world map's 4 km square and the world's cells, which stay as they are), held down near the river so it runs
 // along a valley floor. Sharp crests, broad valleys. Mirrored in shaders/terrain/height.glsl farRelief.
 inline constexpr float RELIEF_START = 3000.f, RELIEF_FULL = 5500.f, RELIEF_HEIGHT = 420.f;
-inline constexpr float RELIEF_VALLEY = 60.f, RELIEF_VALLEY_WIDE = 700.f;  // m from the river: the floor, full height
+inline constexpr float RELIEF_VALLEY = 30.f, RELIEF_VALLEY_WIDE = 300.f;  // m from the river: the floor, full height
 inline constexpr float RELIEF_SCALE = 1800.f;                             // m: the largest ridges
 inline float farRelief(float x, float z) {
     float r2 = x * x + z * z;

@@ -28,6 +28,8 @@
 #include "scene/camera.h"
 #include "scene/characters.h"
 #include "render/occlusion.h"
+#include "render/veg_gpu.h"
+#include "render/frame_graph.h"
 #include "scene/grass.h"
 #include "scene/scene_gpu.h"
 #include "sim/world_sim.h"
@@ -60,15 +62,18 @@ void addScenePasses(const FrameGraphCtx& f) {
     terrainDirty = false;
 
     if (S.rasterPrimary)
+        g.add("veg cull", GFX, [=](VkCommandBuffer cb) { bind(cb); recordVegCull(cb); }).write(models, CS, RW);
+    if (S.rasterPrimary)
         g.add("raster G-buffer", GFX, [](VkCommandBuffer cb) { rasterGBuffer(cb); })
             .read(grass, RASTER, VTX).read(grassCount, RASTER, VTX).read(terrain, RASTER, VTX).read(models, RASTER, VTX)
             .read(windR, RASTER, R)  // plants sway with the wind map (sway.glsl)
             .write(gbuf, COLOR, CA);
+    const uint32_t cloudsR = g.resource("clouds");
     g.add("clouds", GFX, [=](VkCommandBuffer cb) { bind(cb); uint32_t cd = (uint32_t)std::clamp(S.cloudDiv, 1, 16);
         dispatch(cb, P_CLOUD, ((W + cd - 1) / cd + 7) / 8, ((H + cd - 1) / cd + 7) / 8); })
-        .read(skyR, CS, R).write(gbuf, CS, RW);  // (cloudImg rides with the G-buffer: primary reads it next)
+        .read(skyR, CS, R).write(cloudsR, CS, RW);  // primary reads it next
     g.add("primary", GFX, [=](VkCommandBuffer cb) { bind(cb); dispatch(cb, P_PRIMARY, gx, gy, {S.rasterPrimary ? 1u : 0u, 0, 0, 0}); })
-        .read(accel, CS, ASR | R).read(skyR, CS, R).read(models, CS, R).read(grass, CS, R).read(terrain, CS, R).write(gbuf, CS, RW);
+        .read(accel, CS, ASR | R).read(skyR, CS, R).read(models, CS, R).read(grass, CS, R).read(terrain, CS, R).read(cloudsR, CS, R).write(gbuf, CS, RW);
     if (S.rasterPrimary && S.occlusionCull)  // next frame's occlusion grid (render/occlusion.h); the CPU reads it after the fence
         g.add("occlusion grid", GFX, [=](VkCommandBuffer cb) {
             bind(cb);
@@ -101,14 +106,20 @@ void addScenePasses(const FrameGraphCtx& f) {
         }).read(accel, CS, ASR | R).read(skyR, CS, R).read(models, CS, R).write(probesR, CS | XFER, RW | XW);
     g.add("GI", GFX, [=](VkCommandBuffer cb) {
         bind(cb);
+        graph.zoneBegin(cb, "trace");
         dispatch(cb, P_GI, gx, gy);
+        graph.zoneEnd(cb);
         if (S.restirGI) {
             computeBarrier(cb);
+            graph.zoneBegin(cb, "spatial");
             dispatch(cb, P_GI_SPATIAL, gx, gy);
+            graph.zoneEnd(cb);
         }
         if (S.giCache) {
             computeBarrier(cb);
+            graph.zoneBegin(cb, "radiance cache");
             dispatch(cb, P_RADCACHE, RC_ENTRIES / 64, 1);
+            graph.zoneEnd(cb);
         }
     }).read(accel, CS, ASR | R).read(gbuf, CS, R).read(history, CS, R).read(skyR, CS, R).read(probesR, CS, R).write(giRes, CS, RW).write(light, CS, RW);
 }

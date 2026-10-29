@@ -67,3 +67,5 @@ bool occluded(V3 c, float r) {
     occCulled++;
     return true;
 }
+
+bool occlusionValid() { return valid; }

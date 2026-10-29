@@ -75,5 +75,5 @@ void takeRagdollHits(std::vector<RagdollHit>& out);
 // First-person character (capsule, 1.8 m), walks stairs and slopes.
 void spawnPlayer(const float feet[3]);
 // wish = desired horizontal velocity (m/s). Returns feet position.
-void movePlayer(float dt, const float wish[2], bool jump, float outFeet[3], bool& grounded);
+void movePlayer(float dt, const float wish[2], bool jump, float maxSpeed, float outFeet[3], bool& grounded);
 }  // namespace physics

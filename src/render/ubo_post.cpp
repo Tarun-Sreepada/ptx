@@ -58,7 +58,7 @@ void fillPost(UBO& u) {
         float ap = S.physCam ? std::clamp(4.f / S.fStop, 0.3f, 1.5f) : 1.f;  // wide open vignettes more
         u.post1[0] = S.bloom; u.post1[1] = 0; u.post1[2] = S.vignette * ap; u.post1[3] = S.chromAb;
         u.post2[0] = S.grain * (S.physCam ? sqrtf(S.iso / 100.f) : 1.f); u.post2[1] = S.sharpen; u.post2[2] = (float)S.tonemapper; u.post2[3] = pdt;
-        float focal = 0.012f / tanf(cam.fovDeg * 0.5f * 3.14159265f / 180.f);  // 24 mm tall sensor
+        float focal = 0.012f / tanf(cam.fov() * 0.5f * 3.14159265f / 180.f);  // 24 mm tall sensor
         u.post3[0] = S.focusDist; u.post3[1] = focal / std::max(S.fStop, 0.5f);
         u.post3[2] = !S.motionBlur ? 0.f : S.physCam ? std::clamp((1.f / S.shutterDen) / std::max(frameDt, 1e-3f), 0.f, 2.f) : S.mbShutter;
         u.post3[3] = S.dof ? 1.f : 0.f;

@@ -19,6 +19,8 @@ struct PlacementCtx {
     float* xf;         // rock raster transforms (rockXf)
     const std::vector<Zone>& zs;
 };
+// How well a plant takes at x, z (biome.h vegHabitat: tree / shrub line, slope); y: the ground height there
+float habitatAt(float x, float z, bool tree, float& y);
 // A cell's result: its transform and, for trees / plants, the instance record.
 struct PlacedCell { float m[3][4]; TreeInst t; };
 using CellFn = std::function<bool(int ix, int iz, PlacedCell&)>;

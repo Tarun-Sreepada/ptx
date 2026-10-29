@@ -61,26 +61,39 @@ inline int biomeOfCell(int cx, int cz, float px, float pz) {
     }
     return best;
 }
-// the (up to 4) cells that matter at x, z with normalised blend weights; returns the count
+// the (up to 4) cells that matter at x, z with normalised blend weights; returns the count. Every cell centre within
+// the blend width of the nearest is a candidate (5x5 search: blends up to a whole cell); the 4 strongest are kept and
+// weighted by how far they beat the 5th, so a cell fades to nothing before it's dropped (no seams in the ground)
 inline int biomeCells(float x, float z, BiomeCell out[4]) {
     float s = gBiome.size;
     int cx = (int)floorf(x / s), cz = (int)floorf(z / s);
-    float d[9], px[9], pz[9], dmin = 1e30f;
-    int ix[9], iz[9];
-    for (int j = 0; j < 9; j++) {
-        ix[j] = cx + j % 3 - 1; iz[j] = cz + j / 3 - 1;
-        px[j] = (ix[j] + 0.15f + 0.7f * hash2(ix[j] * 3 + 1201, iz[j] + 77)) * s;
-        pz[j] = (iz[j] + 0.15f + 0.7f * hash2(ix[j] + 1307, iz[j] * 3 + 19)) * s;
+    float d[25], px[25], pz[25], dmin = 1e30f;
+    for (int j = 0; j < 25; j++) {
+        int ix = cx + j % 5 - 2, iz = cz + j / 5 - 2;
+        px[j] = (ix + 0.15f + 0.7f * hash2(ix * 3 + 1201, iz + 77)) * s;
+        pz[j] = (iz + 0.15f + 0.7f * hash2(ix + 1307, iz * 3 + 19)) * s;
         d[j] = sqrtf((x - px[j]) * (x - px[j]) + (z - pz[j]) * (z - pz[j]));
         dmin = std::min(dmin, d[j]);
     }
-    float bw = std::max(gBiome.blend * s, 1.f), sum = 0.f;
-    int n = 0;
-    for (int j = 0; j < 9 && n < 4; j++) {
+    float bw = std::clamp(gBiome.blend, 0.f, 1.f) * s;
+    bw = std::max(bw, 1.f);
+    float tk[5] = {0.f, 0.f, 0.f, 0.f, 0.f};  // the 5 strongest, descending
+    int jk[5] = {-1, -1, -1, -1, -1};
+    for (int j = 0; j < 25; j++) {
         float t = 1.f - (d[j] - dmin) / bw;
-        if (t <= 0.f) continue;
-        out[n++] = {px[j], pz[j], t * t, biomeOfCell(ix[j], iz[j], px[j], pz[j])};
-        sum += t * t;
+        if (t <= tk[4]) continue;
+        int i = 4;
+        for (; i > 0 && tk[i - 1] < t; i--) { tk[i] = tk[i - 1]; jk[i] = jk[i - 1]; }
+        tk[i] = t; jk[i] = j;
+    }
+    float sum = 0.f;
+    int n = 0;
+    for (int i = 0; i < 4 && jk[i] >= 0; i++) {
+        float w = tk[i] - tk[4];
+        if (w <= 0.f) break;
+        int j = jk[i], ix = cx + j % 5 - 2, iz = cz + j / 5 - 2;
+        out[n++] = {px[j], pz[j], w * w, biomeOfCell(ix, iz, px[j], pz[j])};
+        sum += w * w;
     }
     for (int i = 0; i < n; i++) out[i].w /= sum;
     return n;
@@ -170,7 +183,8 @@ inline float biomeShapeOne(int b, float x, float z, float h0, float cx, float cz
             f1 = std::min(f1, dd / hgt);
         }
         float tower = std::max(1.f - f1, 0.f);
-        return h0 + R * (gBiome.karstH * powf(tower, 0.45f) * (0.8f + 0.2f * vnoise(x / 9.f, z / 9.f)) + 5.f * vnoise(x / 150.f, z / 150.f));
+        tower = powf(tower * tower * (3.f - 2.f * tower), 0.6f);  // steep sides, but a flared foot: no step the mesh shows as a wall
+        return h0 + R * (gBiome.karstH * tower * (0.8f + 0.2f * vnoise(x / 9.f, z / 9.f)) + 5.f * vnoise(x / 150.f, z / 150.f));
     }
     default: return h0;
     }
@@ -185,7 +199,7 @@ inline float biomeShape(float x, float z, float h0) {
         int n = biomeCells(x, z, c);
         float s = 0.f;
         for (int i = 0; i < n; i++) s += c[i].w * (c[i].b == B_TEMPERATE ? h0 : biomeShapeOne(c[i].b, x, z, h0, c[i].px, c[i].pz));
-        h = h0 + (s - h0) * k * bSstep(25.f, 260.f, riverEdgeDist(x, z));
+        h = h0 + (s - h0) * k * bSstep(10.f, 120.f, riverEdgeDist(x, z));
     }
     float cd = coastDist(x, z);
     if (cd < gBiome.beach + 400.f) {  // beach rising out of the sea, sea floor falling away
@@ -200,6 +214,9 @@ inline float biomeShape(float x, float z, float h0) {
 // ---- lakes and ponds: one candidate per cell, wholly inside it
 struct Lake { float x, z, r, depth; };
 inline constexpr float LAKE_CELL = 1200.f, POND_CELL = 200.f;
+// the shore reaches LAKE_REACH radii (past the shore noise's shrink), and the centre is >= 0.38 cells from the edge:
+// bigger and the shore would be cut off at the cell border in a cliff
+inline constexpr float LAKE_REACH = 2.f, LAKE_MAX_R = 0.38f * LAKE_CELL / LAKE_REACH;
 inline bool lakeIn(int ix, int iz, bool pond, Lake& L) {
     float C = pond ? POND_CELL : LAKE_CELL, chance = pond ? gBiome.ponds : gBiome.lakes;
     int salt = pond ? 5003 : 0;
@@ -214,7 +231,7 @@ inline bool lakeIn(int ix, int iz, bool pond, Lake& L) {
     for (int b = 0; b < B_COUNT; b++) like += w[b] * LAKE_LIKE[b];
     if (hash2(ix * 7 + 11 + salt, iz * 13 + 5) > chance * like) return false;
     float sz = std::clamp(gBiome.lakeSize, 0.2f, 1.6f);
-    L.r = pond ? (8.f + 22.f * hash2(ix + 91 + salt, iz + 3)) : (60.f + 170.f * hash2(ix + 91, iz + 3)) * sz;
+    L.r = pond ? (8.f + 22.f * hash2(ix + 91 + salt, iz + 3)) : std::min((60.f + 170.f * hash2(ix + 91, iz + 3)) * sz, LAKE_MAX_R);
     L.depth = pond ? 0.6f + 1.2f * hash2(ix, iz + 1717) : 4.f + 10.f * hash2(ix + 1717, iz);
     return coastDist(L.x, L.z) > L.r * 2.f;
 }
@@ -224,7 +241,7 @@ inline bool lakeNear(float x, float z, bool pond, Lake& L, float& dn) {
     float C = pond ? POND_CELL : LAKE_CELL;
     if (!lakeIn((int)floorf(x / C), (int)floorf(z / C), pond, L)) return false;
     dn = sqrtf((x - L.x) * (x - L.x) + (z - L.z) * (z - L.z)) / L.r;
-    return dn < 1.8f;
+    return dn < LAKE_REACH;
 }
 // the lake (else pond) reaching x, z
 inline bool lakeAt(float x, float z, Lake& L, float& dn) {
@@ -234,7 +251,7 @@ inline bool lakeAt(float x, float z, Lake& L, float& dn) {
 // bowl inside, shore flattened to the level around it (hc: the ground at the centre)
 inline float lakeShape(float x, float z, float h, const Lake& L, float dn, float hc) {
     dn *= 1.f + 0.18f * (vnoise(x * 0.03f + 7.f, z * 0.03f) - 0.5f);
-    if (dn < 1.f) return std::min(h, hc - 0.4f - L.depth * (1.f - dn * dn) + 0.3f);
+    if (dn < 1.f) return hc - 0.1f - L.depth * (1.f - dn * dn);  // (not min with h: downhill the rim is a dam, no step)
     return hc + (h - hc) * bSstep(1.f, 1.8f, dn);
 }
 inline float lakeCarve(float x, float z, float h) {
@@ -257,6 +274,21 @@ inline bool inStandingWater(float x, float z) {
     Lake L;
     float dn;
     return lakeAt(x, z, L, dn) && dn < 1.05f;
+}
+inline float biomeGrassMul(float x, float z) {
+    float w[B_COUNT], g = 0.f;
+    biomeWeights(x, z, w);
+    for (int b = 0; b < B_COUNT; b++) g += w[b] * BIOME_GRASS[b];
+    return inStandingWater(x, z) ? 0.f : g;
+}
+// Where plants can live, from the ground itself: thin air on the heights (trees give out first, then shrubs and
+// grass) and faces too steep to hold soil or roots. h: ground height (m), slope: rise over run. Mirrored in
+// biome.glsl vegHabitat.
+inline constexpr float TREE_LINE = 110.f, SHRUB_LINE = 150.f, VEG_LINE_FADE = 40.f;
+inline constexpr float TREE_MAX_SLOPE = 0.7f, SHRUB_MAX_SLOPE = 1.f;  // ~35 deg, 45 deg
+inline float vegHabitat(float h, float slope, bool tree) {
+    float line = tree ? TREE_LINE : SHRUB_LINE, ms = tree ? TREE_MAX_SLOPE : SHRUB_MAX_SLOPE;
+    return (1.f - bSstep(line, line + VEG_LINE_FADE, h)) * (1.f - bSstep(ms * 0.75f, ms, slope));
 }
 // grass / tree cover (1 = as the temperate world)
 inline float biomeTreeMul(float x, float z) {

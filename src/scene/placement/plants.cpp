@@ -15,6 +15,7 @@
 #include "vegetation/trees.h"
 #include "world/worldmap.h"
 #include "world/terrain.h"
+#include "world/biome.h"
 #include "world/world.h"
 #include "app/frame_state.h"
 #include "app/settings.h"
@@ -91,8 +92,10 @@ void placePlants(const PlacementCtx& c) {
             float far = std::min(PLANT_RANGE, 2.f * plantR[v] * sc / (pixAngle * 3.f));
             if ((x - cam.pos.x) * (x - cam.pos.x) + (z - cam.pos.z) * (z - cam.pos.z) > far * far) return false;
             if (zoneCover(x, z, zs.data(), (int)zs.size()) > 0.f || inCrater(x, z, 0.f)) return false;
+            float y;  // (deserts, ice, salt, rock: none; nor above the shrub line or on steep faces)
+            if (hash2(ix + 631, iz + 47) >= habitatAt(x, z, false, y) * std::min(biomeGrassMul(x, z), 1.f)) return false;
             float yaw = hash2(ix + 5, iz + 37) * 6.2831853f, c = cosf(yaw) * sc, sn = sinf(yaw) * sc;
-            float m[3][4] = {{c, 0, sn, x}, {0, sc, 0, heightFn(x, z) - 0.02f}, {-sn, 0, c, z}};
+            float m[3][4] = {{c, 0, sn, x}, {0, sc, 0, y - 0.02f}, {-sn, 0, c, z}};
             memcpy(pl.m, m, sizeof m);
             pl.t.v = v;
             return true;
@@ -124,8 +127,12 @@ void placePlants(const PlacementCtx& c) {
             float far = std::min(S.clutterRange, 2.f * plantR[v] * sc / (pixAngle * 2.f));
             if ((x - cam.pos.x) * (x - cam.pos.x) + (z - cam.pos.z) * (z - cam.pos.z) > far * far) return false;
             if (zoneCover(x, z, zs.data(), (int)zs.size()) > 0.f) return false;
+            float y;
+            if (v != trees::PLANT_PEBBLES) {
+                if (hash2(ix + 653, iz + 71) >= habitatAt(x, z, false, y) * std::min(biomeGrassMul(x, z), 1.f)) return false;
+            } else y = heightFn(x, z);
             float yaw = hash2(ix + 3, iz + 53) * 6.2831853f, c = cosf(yaw) * sc, sn = sinf(yaw) * sc;
-            float m[3][4] = {{c, 0, sn, x}, {0, sc, 0, heightFn(x, z) - 0.01f}, {-sn, 0, c, z}};
+            float m[3][4] = {{c, 0, sn, x}, {0, sc, 0, y - 0.01f}, {-sn, 0, c, z}};
             memcpy(pl.m, m, sizeof m);
             pl.t.v = v;
             return true;

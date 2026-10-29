@@ -138,7 +138,7 @@ set(SHADER_SRC ${CMAKE_SOURCE_DIR}/shaders)
 set(SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT})
 # entry points in shaders/passes/, includes in topic folders (core/, sky/, terrain/, water/, ...), included root-relative
-file(GLOB_RECURSE SHADERS CONFIGURE_DEPENDS ${SHADER_SRC}/*.comp ${SHADER_SRC}/*.vert ${SHADER_SRC}/*.frag)
+file(GLOB_RECURSE SHADERS CONFIGURE_DEPENDS ${SHADER_SRC}/*.comp ${SHADER_SRC}/*.vert ${SHADER_SRC}/*.frag ${SHADER_SRC}/*.task ${SHADER_SRC}/*.mesh)
 file(GLOB_RECURSE SHADER_INCLUDES CONFIGURE_DEPENDS ${SHADER_SRC}/*.glsl)
 set(SPV_FILES)
 foreach(s ${SHADERS})

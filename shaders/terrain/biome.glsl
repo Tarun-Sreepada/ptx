@@ -33,27 +33,38 @@ int biomeOfCell(int cx, int cz, vec2 c) {
     }
     return best;
 }
-// up to 4 cells: xy centre, z weight, w biome
+// up to 4 cells: xy centre, z weight, w biome (biome.h biomeCells: 5x5 search, the 4 strongest weighted by how far
+// they beat the 5th, so none drops out abruptly)
 int biomeCells(vec2 p, out vec4 o[4]) {
     float s = F.biomeP[0].y;
     int cx = int(floor(p.x / s)), cz = int(floor(p.y / s));
-    float d[9];
-    vec2 pc[9];
+    float d[25];
+    vec2 pc[25];
     float dmin = 1e30;
-    for (int j = 0; j < 9; j++) {
-        int ix = cx + j % 3 - 1, iz = cz + j / 3 - 1;
+    for (int j = 0; j < 25; j++) {
+        int ix = cx + j % 5 - 2, iz = cz + j / 5 - 2;
         pc[j] = vec2((float(ix) + 0.15 + 0.7 * thash(ix * 3 + 1201, iz + 77)) * s, (float(iz) + 0.15 + 0.7 * thash(ix + 1307, iz * 3 + 19)) * s);
         d[j] = length(p - pc[j]);
         dmin = min(dmin, d[j]);
     }
-    float bw = max(F.biomeP[0].z * s, 1.0), sum = 0.0;
-    int n = 0;
-    for (int j = 0; j < 9 && n < 4; j++) {
+    float bw = max(clamp(F.biomeP[0].z, 0.0, 1.0) * s, 1.0);
+    float tk[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0);
+    int jk[5] = int[5](-1, -1, -1, -1, -1);
+    for (int j = 0; j < 25; j++) {
         float t = 1.0 - (d[j] - dmin) / bw;
-        if (t <= 0.0) continue;
-        int ix = cx + j % 3 - 1, iz = cz + j / 3 - 1;
-        o[n++] = vec4(pc[j], t * t, float(biomeOfCell(ix, iz, pc[j])));
-        sum += t * t;
+        if (t <= tk[4]) continue;
+        int i = 4;
+        for (; i > 0 && tk[i - 1] < t; i--) { tk[i] = tk[i - 1]; jk[i] = jk[i - 1]; }
+        tk[i] = t; jk[i] = j;
+    }
+    float sum = 0.0;
+    int n = 0;
+    for (int i = 0; i < 4 && jk[i] >= 0; i++) {
+        float w = tk[i] - tk[4];
+        if (w <= 0.0) break;
+        int j = jk[i], ix = cx + j % 5 - 2, iz = cz + j / 5 - 2;
+        o[n++] = vec4(pc[j], w * w, float(biomeOfCell(ix, iz, pc[j])));
+        sum += w * w;
     }
     for (int i = 0; i < n; i++) o[i].z /= sum;
     return n;
@@ -140,7 +151,8 @@ float biomeShapeOne(int b, vec2 p, float h0, vec2 c) {
             f1 = min(f1, length(p - pc) / (C * (0.25 + 0.3 * hg)) / hg);
         }
         float tower = max(1.0 - f1, 0.0);
-        return h0 + R * (F.biomeP[5].w * pow(tower, 0.45) * (0.8 + 0.2 * tnoise(x / 9.0, z / 9.0)) + 5.0 * tnoise(x / 150.0, z / 150.0));
+        tower = pow(tower * tower * (3.0 - 2.0 * tower), 0.6);  // (biome.h)
+        return h0 + R * (F.biomeP[5].w * tower * (0.8 + 0.2 * tnoise(x / 9.0, z / 9.0)) + 5.0 * tnoise(x / 150.0, z / 150.0));
     }
     return h0;
 }
@@ -153,7 +165,7 @@ float biomeShape(vec2 p, float h0) {
         float s = 0.0;
         for (int i = 0; i < n; i++) { int b = int(c[i].w); s += c[i].z * (b == B_TEMPERATE ? h0 : biomeShapeOne(b, p, h0, c[i].xy)); }
         vec4 r = riverInfo(p);
-        h = h0 + (s - h0) * k * smoothstep(25.0, 260.0, abs(r.x) - r.y);
+        h = h0 + (s - h0) * k * smoothstep(10.0, 120.0, abs(r.x) - r.y);
     }
     float cd = coastDist(p), beach = F.biomeP[2].z;
     if (cd < beach + 400.0) {
@@ -167,6 +179,7 @@ float biomeShape(vec2 p, float h0) {
 
 // ---- lakes and ponds: xy centre, z radius, w depth
 const float LAKE_CELL = 1200.0, POND_CELL = 200.0;
+const float LAKE_REACH = 2.0, LAKE_MAX_R = 0.38 * LAKE_CELL / LAKE_REACH;  // (biome.h)
 bool lakeIn(int ix, int iz, bool pond, out vec4 L) {
     L = vec4(0);
     float C = pond ? POND_CELL : LAKE_CELL, chance = pond ? F.biomeP[3].y : F.biomeP[2].w;
@@ -181,7 +194,7 @@ bool lakeIn(int ix, int iz, bool pond, out vec4 L) {
     for (int b = 0; b < B_COUNT; b++) like += w[b] * LAKE_LIKE[b];
     if (thash(ix * 7 + 11 + salt, iz * 13 + 5) > chance * like) return false;
     float sz = clamp(F.biomeP[3].x, 0.2, 1.6);
-    L.z = pond ? (8.0 + 22.0 * thash(ix + 91 + salt, iz + 3)) : (60.0 + 170.0 * thash(ix + 91, iz + 3)) * sz;
+    L.z = pond ? (8.0 + 22.0 * thash(ix + 91 + salt, iz + 3)) : min((60.0 + 170.0 * thash(ix + 91, iz + 3)) * sz, LAKE_MAX_R);
     L.w = pond ? 0.6 + 1.2 * thash(ix, iz + 1717) : 4.0 + 10.0 * thash(ix + 1717, iz);
     return coastDist(L.xy) > L.z * 2.0;
 }
@@ -195,7 +208,7 @@ bool lakeNear(vec2 p, bool pond, out vec4 L, out float dn) {
     dn = 1e9;
     if (!lakeIn(int(floor(p.x / C)), int(floor(p.y / C)), pond, L)) return false;
     dn = length(p - L.xy) / L.z;
-    return dn < 1.8;
+    return dn < LAKE_REACH;
 }
 // the lake (else pond) reaching p; the loops stay loops so the heavy calls aren't inlined twice
 bool lakeAt(vec2 p, out vec4 L, out float dn) {
@@ -210,7 +223,7 @@ bool lakeAt(vec2 p, out vec4 L, out float dn) {
 float lakeShape(vec2 p, float h, vec4 L, float dn, float hc) {
     float lv = hc;  // (the shore: just above the water, 0.4 m under the centre ground)
     dn *= 1.0 + 0.18 * (tnoise(p.x * 0.03 + 7.0, p.y * 0.03) - 0.5);
-    if (dn < 1.0) return min(h, lv - 0.4 - L.w * (1.0 - dn * dn) + 0.3);
+    if (dn < 1.0) return lv - 0.1 - L.w * (1.0 - dn * dn);  // (biome.h)
     return lv + (h - lv) * smoothstep(1.0, 1.8, dn);
 }
 float standingWaterAt(vec2 p) {
@@ -236,6 +249,12 @@ float biomeGrass(vec2 p) {
     return inStandingWater(p) ? 0.0 : g;
 }
 
+// where plants can live: below the tree / shrub line, on faces that hold soil (biome.h vegHabitat)
+const float TREE_LINE = 110.0, SHRUB_LINE = 150.0, VEG_LINE_FADE = 40.0, TREE_MAX_SLOPE = 0.7, SHRUB_MAX_SLOPE = 1.0;
+float vegHabitat(float h, float slope, bool tree) {
+    float line = tree ? TREE_LINE : SHRUB_LINE, ms = tree ? TREE_MAX_SLOPE : SHRUB_MAX_SLOPE;
+    return (1.0 - smoothstep(line, line + VEG_LINE_FADE, h)) * (1.0 - smoothstep(ms * 0.75, ms, slope));
+}
 // ground colour per biome (h: ground height, base: the temperate colour, mask: its grass cover)
 vec3 biomeAlbedo(vec2 p, vec3 base, float mask) {
     if (!biomeOn()) return base;

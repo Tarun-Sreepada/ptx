@@ -60,11 +60,14 @@ vec3 farGround(vec3 o, vec3 d, out bool hit) {
         if (o.y + d.y * t > FAR_TOP) return vec3(0);
         tEnd = min(tEnd, (FAR_TOP - o.y) / max(d.y, 1e-6));
     }
+    // the sea past the mesh: its surface is the floor of the march, so the ocean runs on to the horizon
+    bool ocean = biomeOn() && F.biomeP[1].z > 0.0;
+    float sea = ocean ? F.biomeP[2].x : -1e9;
     float prevT = t, prevGap = 1e30;
     for (int i = 0; i < FAR_STEPS && t < tEnd; i++) {
         vec3 q = o + d * t;
         float cv;
-        float gap = q.y - farHeightC(q.xz, cv);
+        float gap = q.y - max(farHeightC(q.xz, cv), sea);
         if (gap < 0.0) {
             t = prevT + (t - prevT) * prevGap / max(prevGap - gap, 1e-4);  // secant
             hit = true;
@@ -78,7 +81,7 @@ vec3 farGround(vec3 o, vec3 d, out bool hit) {
     }
     if (!hit) {  // the mean ground plane
         if (d.y >= 0.0) return vec3(0);  // passed over every peak: sky
-        float tp = (o.y + 1.5) / -d.y;
+        float tp = (o.y - max(-1.5, sea)) / -d.y;
         if (tp > tEnd * 1.5) return vec3(0);
         t = tp;
         hit = true;
@@ -86,7 +89,21 @@ vec3 farGround(vec3 o, vec3 d, out bool hit) {
     farHitT = t;
     vec3 P = o + d * t;
     float e = max(2.0, t * 0.004), cov, c2;
-    farHeightC(P.xz, cov);
+    // aerial perspective as composite.comp does it for geometry (sky pixels skip that pass)
+    float h = max(P.y + VIEW_H, 0.0);
+    vec3 T = exp(-(BR * exp(-h / HR) + vec3(BME * exp(-h / HM))) * F.params2.w * t);
+    vec3 haze = skyAtmo(normalize(vec3(d.x, 0.03, d.z)));
+    if (farHeightC(P.xz, cov) < sea) {  // open water: deep colour under a Fresnel sky reflection + the sun's glint
+        vec2 rp = P.xz * 0.02 + F.wind.xy * F.camPos.w * 0.05;
+        vec3 n = normalize(vec3((tnoise(rp.x, rp.y) - 0.5) * 0.08, 1.0, (tnoise(rp.x + 31.0, rp.y - 17.0) - 0.5) * 0.08));
+        vec3 r = reflect(d, n);
+        r.y = abs(r.y);
+        float fr = 0.02 + 0.98 * pow(1.0 - max(dot(-d, n), 0.0), 5.0);
+        vec3 deep = vec3(0.004, 0.022, 0.035) * (F.sunColor.rgb * max(F.sunDir.y, 0.0) + skyAtmo(vec3(0, 1, 0)));
+        vec3 glint = F.sunColor.rgb * pow(max(dot(r, F.sunDir.xyz), 0.0), 400.0) * 40.0 * cloudShadow(P);
+        vec3 col = mix(deep, skyAtmo(r) + glint, fr);
+        return col * T + haze * (1.0 - T);
+    }
     vec3 n = normalize(vec3(farHeightC(P.xz - vec2(e, 0), c2) - farHeightC(P.xz + vec2(e, 0), c2), 2.0 * e,
                             farHeightC(P.xz - vec2(0, e), c2) - farHeightC(P.xz + vec2(0, e), c2)));
     vec3 alb = terrainAlbedo(P.xz, 1.0);
@@ -99,10 +116,7 @@ vec3 farGround(vec3 o, vec3 d, out bool hit) {
     alb = mix(alb, vec3(0.82, 0.85, 0.9), smoothstep(F.sim0.x - 40.0, F.sim0.x + 60.0, P.y) * smoothstep(0.5, 0.75, n.y));
     // cloud shadows: the far field darkens under the same clouds as the near ground, so the illusion holds
     vec3 col = alb * (F.sunColor.rgb * max(dot(n, F.sunDir.xyz), 0.0) * cloudShadow(P) / PI + skyAtmo(vec3(0, 1, 0)) * (0.5 + 0.5 * n.y));
-    // aerial perspective as composite.comp does it for geometry (sky pixels skip that pass)
-    float h = max(P.y + VIEW_H, 0.0);
-    vec3 T = exp(-(BR * exp(-h / HR) + vec3(BME * exp(-h / HM))) * F.params2.w * t);
-    return col * T + skyAtmo(normalize(vec3(d.x, 0.03, d.z))) * (1.0 - T);
+    return col * T + haze * (1.0 - T);
 }
 vec3 sky(vec3 d) {
     if (d.y < 0.3) {  // (above that no ray from below the summits reaches one)

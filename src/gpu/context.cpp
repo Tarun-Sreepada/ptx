@@ -66,6 +66,8 @@ PFN_vkCmdBuildAccelerationStructuresKHR pCmdBuildAS;
 PFN_vkGetAccelerationStructureDeviceAddressKHR pGetASAddr;
 
 PFN_vkDestroyAccelerationStructureKHR pDestroyAS;
+PFN_vkCmdDrawMeshTasksIndirectEXT pCmdDrawMeshTasksIndirect = nullptr;
+bool hasMeshShaders = false;
 
 // ---------------------------------------------------------------- device setup
 static bool hasExt(VkPhysicalDevice pd, const char* name) {
@@ -223,6 +225,20 @@ void initVulkan(bool validate) {
     f12.pNext = &f13;
     VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f2.pNext = &f12;
+    // mesh shaders (VK_EXT_mesh_shader): vegetation meshlets culled per cluster (raster_model.task / .mesh)
+    VkPhysicalDeviceMeshShaderFeaturesEXT msf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+    if (hasExt(phys, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
+        VkPhysicalDeviceMeshShaderFeaturesEXT q{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 qf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        qf.pNext = &q;
+        vkGetPhysicalDeviceFeatures2(phys, &qf);
+        hasMeshShaders = q.taskShader && q.meshShader;
+    }
+    if (hasMeshShaders) {
+        msf.taskShader = msf.meshShader = VK_TRUE;
+        msf.pNext = f13.pNext;
+        f13.pNext = &msf;
+    }
     f2.features.geometryShader = VK_TRUE;     // gl_PrimitiveID in raster_model.frag (per-triangle material)
     f2.features.samplerAnisotropy = VK_TRUE;
     f2.features.shaderFloat64 = VK_TRUE;                       // groundgen.glsl: kilometre positions at sub-mm precision
@@ -236,6 +252,7 @@ void initVulkan(bool validate) {
     if (hasExt(phys, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) dext.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     for (auto e : ngxDev)  // DLSS-RR (NGX) device extensions, where the driver has them (BDA is core 1.2, enabled above)
         if (strcmp(e, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) && hasExt(phys, e) && std::none_of(dext.begin(), dext.end(), [&](auto x) { return !strcmp(x, e); })) dext.push_back(e);
+    if (hasMeshShaders) dext.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
     bool memBudget = hasExt(phys, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (memBudget) dext.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
@@ -262,6 +279,8 @@ void initVulkan(bool validate) {
     pCmdBuildAS = (PFN_vkCmdBuildAccelerationStructuresKHR)vkGetDeviceProcAddr(dev, "vkCmdBuildAccelerationStructuresKHR");
     pGetASAddr = (PFN_vkGetAccelerationStructureDeviceAddressKHR)vkGetDeviceProcAddr(dev, "vkGetAccelerationStructureDeviceAddressKHR");
     pDestroyAS = (PFN_vkDestroyAccelerationStructureKHR)vkGetDeviceProcAddr(dev, "vkDestroyAccelerationStructureKHR");
+    if (hasMeshShaders) pCmdDrawMeshTasksIndirect = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(dev, "vkCmdDrawMeshTasksIndirectEXT");
+    hasMeshShaders = hasMeshShaders && pCmdDrawMeshTasksIndirect;
 
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;

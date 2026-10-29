@@ -1,5 +1,6 @@
 // The player: a CharacterVirtual capsule walking, sliding and jumping over the world.
 #include "physics/jolt_internal.h"
+#include "scene/camera.h"  // (sigmoid01)
 
 namespace physics {
 void spawnPlayer(const float feet[3]) {
@@ -12,7 +13,7 @@ void spawnPlayer(const float feet[3]) {
     player = new CharacterVirtual(s, RVec3(feet[0], feet[1], feet[2]), Quat::sIdentity(), 0, sys.get());
 }
 
-void movePlayer(float dt, const float wish[2], bool jump, float outFeet[3], bool& grounded) {
+void movePlayer(float dt, const float wish[2], bool jump, float maxSpeed, float outFeet[3], bool& grounded) {
     if (!player) return;
     Vec3 g = sys->GetGravity();
     player->UpdateGroundVelocity();
@@ -25,10 +26,24 @@ void movePlayer(float dt, const float wish[2], bool jump, float outFeet[3], bool
     if (!grounded) h = Vec3(vel.GetX(), 0, vel.GetZ());
     Vec3 w(wish[0], 0, wish[1]);
     float ws = w.Length();
-    // human-ish feet: ~0.4 s to walking pace, ~0.3 s to stop, sharp reversals brake before re-accelerating.
-    // In the air there's almost no control: momentum from the takeoff carries the jump.
-    const float accel = grounded ? 9.f : 1.2f, brake = grounded ? 12.f : 0.5f, lateral = grounded ? 7.f : 0.5f;
-    if (ws > 1e-3f) {
+    // Bunny hopping (Quake / Source rules): landing with jump held takes off again on the same step, before the
+    // feet can brake, and in the air the wish only adds speed while the velocity along it is under AIR_CAP, so
+    // strafing while turning the view keeps pushing sideways into an ever faster arc. The gain fades along a sigmoid
+    // as the speed nears maxSpeed (fast hops get harder, not suddenly impossible) and never passes it.
+    const float AIR_CAP = 0.8f, AIR_ACCEL = 12.f;
+    bool hop = grounded && jump;
+    if (!grounded || hop) {
+        if (ws > 1e-3f) {
+            Vec3 d = w / ws;
+            float add = std::min(AIR_CAP - h.Dot(d), AIR_ACCEL * ws * dt);
+            if (add > 0.f) h += d * (add * (1.f - sigmoid01(h.Length() / maxSpeed)));
+        }
+        float l = h.Length();
+        if (l > maxSpeed) h *= maxSpeed / l;
+    }
+    // human-ish feet: ~0.4 s to walking pace, ~0.3 s to stop, sharp reversals brake before re-accelerating
+    const float accel = 9.f, brake = 12.f, lateral = 7.f;
+    if (grounded && !hop && ws > 1e-3f) {
         Vec3 d = w / ws;
         float along = h.Dot(d);
         Vec3 side = h - d * along;
@@ -42,7 +57,7 @@ void movePlayer(float dt, const float wish[2], bool jump, float outFeet[3], bool
             along = std::min(ws, along + accel * (1.f - 0.6f * t * t) * dt);
         } else along = std::max(ws, along - brake * dt);
         h = d * along + side;
-    } else {
+    } else if (grounded && !hop) {
         float l = h.Length(), drop = brake * dt;
         h = l > drop ? h * ((l - drop) / l) : Vec3::sZero();
     }

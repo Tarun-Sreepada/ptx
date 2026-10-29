@@ -1,0 +1,26 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+#include "scene/cull.glsl"
+
+// Rocks for the raster G-buffer (placed + thrown, rockXf): frustum and occlusion test each, list the visible ones in
+// rockVis and count them into the rock draw's instance count (render/veg_gpu.cpp); raster_rock.vert reads through
+// the list. pc: a rocks, b the rock draw's offset in cmd (uints), c occlusion grid valid, d culling on (0: all pass).
+layout(local_size_x = 64) in;
+layout(binding = 31, std430) readonly buffer RockXf { vec4 rockXf[]; };
+layout(binding = 107, std430) buffer VegCmd { uint cmd[]; };
+layout(binding = 109, std430) writeonly buffer RockVis { uint rockVis[]; };
+
+const float ROCK_R = 1.0;  // the rock meshes' bounding radius at scale 1 (buildRockMesh: radius ~1)
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.a) return;
+    uint b = i * 4u;
+    vec4 r0 = rockXf[b], r1 = rockXf[b + 1u], r2 = rockXf[b + 2u];
+    vec3 c = vec3(r0.w, r1.w, r2.w);
+    float r = ROCK_R * max(length(r0.xyz), max(length(r1.xyz), length(r2.xyz))) * 1.05;
+    if (pc.d != 0u && (!inFrustum(c, r) || occluded(c, r, pc.c != 0u))) return;
+    uint n = atomicAdd(cmd[pc.b + 1u], 1u);
+    rockVis[n] = i;
+}

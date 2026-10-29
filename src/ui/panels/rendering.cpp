@@ -100,6 +100,7 @@ void panelRendering() {
     ui::SameLine(); if (ui::Checkbox("probes at bounce 2", &S.giProbes)) resetHistory = true;
     ImGui::BeginDisabled(!S.giChecker);
     if (ui::SliderInt("checker square px", &S.giCheckerCell, 1, 32)) resetHistory = true;
+    if (ui::Checkbox("quarter rate (1 in 4 traced per frame)", &S.giQuarter)) resetHistory = true;
     ui::SetItemTooltip("Size of the checkerboard squares that skip new GI rays each frame.\n"
                           "8 or more: whole GPU warps skip, which is where the time saving comes from.\n"
                           "Below 8: finer, smoother pattern, but most of the saving is lost (idle lanes still cost).\n"

@@ -21,7 +21,7 @@ VkDescriptorSet descSet;
 VkPipelineLayout pipeLayout;
 VkPipelineCache pipeCache;
 VkPipeline pipes[P_COUNT];
-VkPipeline rasterTerrain, rasterGrass, rasterRock, rasterModel, rasterImpostor;
+VkPipeline rasterTerrain, rasterGrass, rasterRock, rasterModel, rasterImpostor, rasterModelMesh;
 
 namespace {
 VkDescriptorSetLayout setLayout;
@@ -29,7 +29,7 @@ VkDescriptorSetLayout setLayout;
 const char* PIPE_NAMES[P_COUNT] = {"sky", "terrain", "grass", "grass_tail", "primary", "restir_initial", "restir_spatial", "gi",
                                    "restir_gi_spatial", "temporal", "atrous", "composite", "dlss_prep", "dlss_tonemap", "impostor_bake",
                                    "probe_bake", "probe_filter", "wind", "exposure", "bloom", "post", "present_hdr", "volfog", "surface_fx",
-                                   "worldsim", "radcache_resolve", "skin", "vtgen", "occlusion", "cloud"};
+                                   "worldsim", "radcache_resolve", "skin", "vtgen", "occlusion", "cloud", "vegcull", "rockcull"};
 constexpr uint32_t PUSH_CONSTANT_BYTES = 16;     // 4 x uint (every compute pass)
 constexpr uint32_t CACHE_MAGIC = 0x50544350;     // "PCTP": header in front of the driver's blob
 const char* CACHE_FILE = "pipeline_cache.bin";   // in the build folder, next to shaders/
@@ -107,12 +107,13 @@ VkPipeline mkComputePipeline(const char* name) {
 }
 
 // G-buffer raster pipeline: GBUF_TARGETS colour targets (gDepth, gNorm, gAlbedo, gEmis, gMat, gMat2, gTan, gVel) +
-// reverse-Z depth. stride 0 = no vertex input (vertex pulling)
-VkPipeline mkRasterPipeline(const char* vert, uint32_t stride, bool hasNormal, const char* frag) {
-    VkShaderModule vm = loadModule(vert), fm = loadModule(frag);
-    VkPipelineShaderStageCreateInfo st[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vm, "main", nullptr},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fm, "main", nullptr}};
+// reverse-Z depth. stride 0 = no vertex input (vertex pulling). task: a task + mesh pipeline (vert is the mesh shader)
+VkPipeline mkRasterPipeline(const char* vert, uint32_t stride, bool hasNormal, const char* frag, const char* task = nullptr) {
+    VkShaderModule vm = loadModule(vert), fm = loadModule(frag), tm = task ? loadModule(task) : VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo st[3] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, task ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT, vm, "main", nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fm, "main", nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_TASK_BIT_EXT, tm, "main", nullptr}};
     VkVertexInputBindingDescription vb{0, stride, VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription va[2] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12}};
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -150,10 +151,10 @@ VkPipeline mkRasterPipeline(const char* vert, uint32_t stride, bool hasNormal, c
     pr.depthAttachmentFormat = depthFmt;
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gp.pNext = &pr;
-    gp.stageCount = 2;
+    gp.stageCount = task ? 3 : 2;
     gp.pStages = st;
-    gp.pVertexInputState = &vi;
-    gp.pInputAssemblyState = &ia;
+    gp.pVertexInputState = task ? nullptr : &vi;
+    gp.pInputAssemblyState = task ? nullptr : &ia;
     gp.pViewportState = &vp;
     gp.pRasterizationState = &rs;
     gp.pMultisampleState = &ms;
@@ -165,16 +166,18 @@ VkPipeline mkRasterPipeline(const char* vert, uint32_t stride, bool hasNormal, c
     VK_CHECK(vkCreateGraphicsPipelines(dev, pipeCache, 1, &gp, nullptr, &p));
     vkDestroyShaderModule(dev, vm, nullptr);
     vkDestroyShaderModule(dev, fm, nullptr);
+    if (tm) vkDestroyShaderModule(dev, tm, nullptr);
     return p;
 }
 
-struct RasterDef { VkPipeline* out; const char* vert; uint32_t stride; bool normal; const char* frag; };
+struct RasterDef { VkPipeline* out; const char* vert; uint32_t stride; bool normal; const char* frag; const char* task = nullptr; };
 const RasterDef RASTER[] = {
     {&rasterTerrain, "raster_terrain.vert.spv", 24, true, "raster.frag.spv"},
     {&rasterGrass, "raster_grass.vert.spv", 12, false, "raster.frag.spv"},
     {&rasterRock, "raster_rock.vert.spv", 24, true, "raster.frag.spv"},
     {&rasterModel, "raster_model.vert.spv", 0, false, "raster_model.frag.spv"},
     {&rasterImpostor, "raster_impostor.vert.spv", 0, false, "raster_impostor.frag.spv"},
+    {&rasterModelMesh, "raster_model.mesh.spv", 0, false, "raster_model.frag.spv", "raster_model.task.spv"},
 };
 constexpr uint32_t RASTER_COUNT = sizeof(RASTER) / sizeof(RASTER[0]);
 }  // namespace
@@ -221,6 +224,10 @@ void createPipelineLayout() {
     add(102, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // its tile requests
     for (uint32_t i = 103; i <= 105; i++) add(i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);          // vtgen.comp outputs
     add(106, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // occlusion grid
+    add(107, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // vegetation: indirect draws
+    add(108, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // vegetation: instances
+    add(109, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // visible rocks
+    for (uint32_t i = 110; i <= 112; i++) add(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);          // meshlets, their data, buckets
     VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     lci.bindingCount = (uint32_t)b.size();
     lci.pBindings = b.data();
@@ -261,7 +268,8 @@ void createPipelines() {
             if (i < P_COUNT) pipes[i] = mkComputePipeline(PIPE_NAMES[i]);
             else {
                 const RasterDef& r = RASTER[i - P_COUNT];
-                *r.out = mkRasterPipeline(r.vert, r.stride, r.normal, r.frag);
+                if (r.task && !hasMeshShaders) continue;
+                *r.out = mkRasterPipeline(r.vert, r.stride, r.normal, r.frag, r.task);
             }
         }
     });

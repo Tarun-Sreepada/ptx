@@ -63,6 +63,11 @@ void main() {
         if (out_) lod *= F.grassB.w;
     }
     float mask = grassMask(xz);
+    if (mask > 0.0) {  // none above the shrub line or on faces too steep to hold soil (biome.glsl vegHabitat)
+        const float e = 1.5;
+        float sx = terrainHeight(xz + vec2(e, 0)) - root.y, sz = terrainHeight(xz + vec2(0, e)) - root.y;
+        mask *= vegHabitat(root.y, length(vec2(sx, sz)) / e, false);
+    }
     float q = lod * mask;
     float u = float(h2 & 0xFFFFu) / 65535.0;
     if (u >= q && !anim) return;

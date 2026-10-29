@@ -41,6 +41,8 @@ bool asyncCompute = true;    // the async compute queue at all (fog below)
 bool asyncBVH = false;
 
 bool asyncFog = false;       // volumetric fog on the async compute queue: also ~2.9 ms slower per frame here (same test)
+// (2026-10-29: the sky clouds there too, overlapping the raster G-buffer: ~7 ms slower. Async compute stays for the
+// BVH / fog toggles only; this GPU + driver lose more to the contention than the overlap wins.)
 
 // The frame as a render graph (rendergraph.h): passes declare what they read / write; barriers, queue
 // batches and timeline waits are derived. The BVH build runs on the async compute queue and overlaps the

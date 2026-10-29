@@ -6,6 +6,7 @@
 // 4th row whose x is the variant's base vertex: all variants share the index list, the vertex comes from rv.
 layout(binding = 29, std430) readonly buffer RockV { float rv[]; };  // pos.xyz, normal.xyz
 layout(binding = 31, std430) readonly buffer RockXf { vec4 rockXf[]; };
+layout(binding = 109, std430) readonly buffer RockVis { uint rockVis[]; };  // the visible ones (rockcull.comp)
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNrm;
 layout(location = 0) out vec3 oP;
@@ -16,7 +17,7 @@ layout(location = 4) flat out uint oBlade;
 layout(location = 5) out vec3 oPrev;  // last frame's position (second half of rockXf)
 
 void main() {
-    uint b = uint(gl_InstanceIndex) * 4u;
+    uint b = rockVis[gl_InstanceIndex] * 4u;
     vec4 r0 = rockXf[b], r1 = rockXf[b + 1u], r2 = rockXf[b + 2u];
     uint v = 6u * (uint(gl_VertexIndex) + floatBitsToUint(rockXf[b + 3u].x));
     vec4 p = vec4(rv[v], rv[v + 1u], rv[v + 2u], 1.0);

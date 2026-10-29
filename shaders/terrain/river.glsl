@@ -106,7 +106,7 @@ float hills(vec2 p) {
     float n = tnoise(p.x * 0.0035 + 101.0, p.y * 0.0035 - 57.0) * 0.6 + tnoise(p.x * 0.009 - 13.0, p.y * 0.009 + 29.0) * 0.3 +
               tnoise(p.x * 0.024 + 7.0, p.y * 0.024 + 3.0) * 0.1;
     vec4 r = riverInfo(p);
-    float t = clamp((abs(r.x) - r.y - 20.0) / 220.0, 0.0, 1.0);
+    float t = clamp((abs(r.x) - r.y - 6.0) / 60.0, 0.0, 1.0);
     return F.river2.w * HILL_HEIGHT * n * n * t * t * (3.0 - 2.0 * t);
 }
 const float RIVER_ROCK_L = 2.5;

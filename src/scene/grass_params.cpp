@@ -56,7 +56,7 @@ void fillGrassParams(UBO& u) {
     const float d2r = 3.14159265f / 180.f;
     float cs = 1.f / sqrtf(S.grassDensity), R = S.drawDist;
     grassGridN = (uint32_t)ceilf(2 * R / cs) + 1;
-    float vfov = cam.fovDeg * d2r, hfov = 2 * atanf(tanf(vfov / 2) * W / H), m = S.fovMargin * d2r;
+    float vfov = cam.fov() * d2r, hfov = 2 * atanf(tanf(vfov / 2) * W / H), m = S.fovMargin * d2r;
     u.grassA[0] = cs; u.grassA[1] = S.grassLength; u.grassA[2] = S.lodStart; u.grassA[3] = R;
     u.grassB[0] = tanf(std::min((hfov + m) / 2, 1.5f)); u.grassB[1] = tanf(std::min((vfov + m) / 2, 1.5f)); u.grassB[2] = S.keepRadius; u.grassB[3] = S.offscreenDensity;
     u.grassGrid[0] = (int)floorf((cam.pos.x - R) / cs); u.grassGrid[1] = (int)floorf((cam.pos.z - R) / cs);
