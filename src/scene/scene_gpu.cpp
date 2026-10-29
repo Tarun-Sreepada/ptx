@@ -20,6 +20,7 @@
 #include "render/ground_vt.h"
 #include "render/lights.h"
 #include "render/lighttree.h"
+#include "render/occlusion.h"
 #include "render/targets.h"
 #include "scene/characters.h"
 #include "scene/grass.h"
@@ -117,6 +118,7 @@ void createSmallBuffers() {
     memset(simRB.map, 0, SIM_RB * SIM_RB * 8);
     exposureBuf = mkBuf(EXPOSURE_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, HOST);
     memset(exposureBuf.map, 0, EXPOSURE_BYTES);
+    createOcclusionBuffer();
 }
 
 // light orbs drift in a square tile (S.orbRange wide) that wraps around the camera; positions in tile units
@@ -287,13 +289,20 @@ void createAccels() {
     tlas = mkAccel(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, TRACE, &tlasGeom, TLAS_CAPACITY);
 }
 
-void cmdBuildScene(VkCommandBuffer cb) {
+// in three steps, each its own render graph pass (so each is timed): the terrain BLAS (when its mesh changed), the
+// grass BLAS, then the TLAS over everything
+void cmdBuildTerrainBLAS(VkCommandBuffer cb) {
     const VkBuildAccelerationStructureFlagsKHR TRACE = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    if (terrainDirty) cmdBuild(cb, terrainAS, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, TRACE, &terrainGeom, terrainTris, false);
+    cmdBuild(cb, terrainAS, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, TRACE, &terrainGeom, terrainTris, false);
+}
+
+void cmdBuildGrassBLAS(VkCommandBuffer cb) {
     cmdBuild(cb, grassAS, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, grassFlags, &grassGeom, bladeCap * GRASS_TRIS, grassRefit);
     grassBuilt = true;
-    memBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-               VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+}
+
+void cmdBuildTLAS(VkCommandBuffer cb) {
+    const VkBuildAccelerationStructureFlagsKHR TRACE = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
     uint32_t instances = INST_MODELS + numModelInst + numRocks + numTrees + numPlants + numThrown + numSprayInst + numFallen + numCharInst;
     cmdBuild(cb, tlas, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, TRACE, &tlasGeom, instances, false);
     memBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,

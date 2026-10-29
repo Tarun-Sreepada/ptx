@@ -16,7 +16,7 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 params;     // x exposure, y history max, z firefly clamp, w spatial radius (px)
     vec4 params2;
     uvec4 res;       // width, height, frame index, light count
-    uvec4 settings;  // rays on first bounce, bounces, flags, view mode
+    uvec4 settings;  // rays on first bounce, bounces, flags, view mode (low 16 bits) | GI checker cell px << 16
     uvec4 counts;    // unused, GI spatial samples, ReSTIR candidates, spatial samples
     vec4 grassA;     // x cell size (m), y length scale, z LOD start distance, w draw distance
     vec4 grassB;     // x tan(half horizontal fov + margin), y tan(half vertical fov + margin), z keep radius, w off-screen density
@@ -65,7 +65,7 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 simBrush;        // editor snow brush: x, z, radius (0 = off), metres per second (negative removes)
     vec4 fractal;         // ground detail (ground.glsl): x mode (0 textures, 1 fractal, 2 hybrid, 3 layered virtual texture), y relief, z pebbles, w finest scale (m)
     ivec4 craterGrid;     // crater bins (material.glsl): xy first bin (16 m), z bins per side, w valid
-    ivec4 fogRes;         // volumetric fog: x resolution divisor (1 full .. 4 quarter), yz grid size (volfog.comp)
+    ivec4 fogRes;         // volumetric fog: x resolution divisor (1 full .. 128), yz grid size, w god rays (volfog.comp)
     vec4 clouds3;         // stratus deck: x coverage, y lumpiness (stratus -> stratocumulus), z base (m), w thickness (m)
     vec4 clouds4;         // x cumulonimbus amount, y cumulonimbus top (m), z cirrus amount, w cirrus altitude (m)
     vec4 clouds5;         // cirrus: x strand length, y strand fineness, z puffiness (strands -> tufts)
@@ -97,6 +97,13 @@ layout(binding = 1, std140) uniform FrameUBO {
     vec4 fireInfo;        // x fires
     vec4 pushers[32];     // grass.comp (MAX_PUSHERS = 16): [2i] xyz, radius; [2i+1] x flattening 0..1
     vec4 pushInfo;        // x pushers
+    ivec4 cloudRes;       // sky clouds (cloud.comp): x resolution divisor, yz grid size, w bit 0 image written this frame, bit 1 history invalid
+    vec4 river2;          // river.glsl: x width variation, y braids, z tributaries, w hilliness (terrain.h)
+    vec4 riverShape;      // main channel meander (terrain.h RiverShape): a1, a2, f1, f2
+    vec4 riverShape2;     // p1, p2
+    uvec4 worldSeed;      // x hash mix (terrain.h gSeedMix): every terrain / placement hash
+    vec4 biomeA[4];       // biome.glsl: per-biome amounts (biome.h)
+    vec4 biomeP[7];       // biome.glsl: biome / ocean / lake parameters
 } F;
 
 // Camera projection matching cameraRay(): reverse-Z (near plane 0.05 -> depth 1, infinity -> 0).

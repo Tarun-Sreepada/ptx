@@ -28,7 +28,9 @@ static const XImgDef xDefs[X_COUNT] = {
     {VK_FORMAT_R16G16B16A16_SFLOAT, OUTPUT_RES},   // HDR scene before post (post.glsl hdrTex)
     {VK_FORMAT_R16G16B16A16_SFLOAT, OUTPUT_RES},   // HDR display encoding (PQ / scRGB)
     {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES}, {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES},  // volumetric fog + its history (top-left 1/fogDiv used)
-    {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES}};  // G-buffer velocity: world-space offset to where the surface was last frame
+    {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES},   // G-buffer velocity: world-space offset to where the surface was last frame
+    {VK_FORMAT_R16_SFLOAT, RENDER_RES}, {VK_FORMAT_R16_SFLOAT, RENDER_RES},  // fog history age (frames) + last frame's
+    {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES}, {VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_RES}};  // sky clouds ping-pong: light, transmittance (top-left 1/cloudDiv used)
 
 VkSampler postSampler;          // bilinear, clamp
 

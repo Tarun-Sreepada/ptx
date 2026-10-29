@@ -105,8 +105,13 @@ void fillWeather(UBO& u) {
         u.sim2[0] = S.snowfall / 3600.f; u.sim2[1] = S.dryRate; u.sim2[2] = S.waterMobility; u.sim2[3] = riverSwell;
         memcpy(u.simBrush, gSimBrush, 16);
         buildCraterBins(cam.pos.x, cam.pos.z);
-        int fd = std::clamp(S.fogDiv, 1, 4);
-        u.fogRes[0] = fd; u.fogRes[1] = ((int)W + fd - 1) / fd; u.fogRes[2] = ((int)H + fd - 1) / fd; u.fogRes[3] = 0;
+        int fd = std::clamp(S.fogDiv, 1, 128);
+        u.fogRes[0] = fd; u.fogRes[1] = ((int)W + fd - 1) / fd; u.fogRes[2] = ((int)H + fd - 1) / fd; u.fogRes[3] = S.godRays ? 1 : 0;
+        int cd = std::clamp(S.cloudDiv, 1, 16);
+        u.cloudRes[0] = cd; u.cloudRes[1] = ((int)W + cd - 1) / cd; u.cloudRes[2] = ((int)H + cd - 1) / cd; static int lastCd = 0;
+        static uint32_t cloudFrame = 0;
+        u.cloudRes[3] = (int)(++cloudFrame & 1u) | (cd != lastCd ? 2 : 0);
+        lastCd = cd;
         u.craterGrid[0] = cbOrigin[0]; u.craterGrid[1] = cbOrigin[1]; u.craterGrid[2] = CB_N; u.craterGrid[3] = cbValid ? 1 : 0;
         u.fractal[0] = (float)S.groundMode; u.fractal[1] = S.fractalRelief; u.fractal[2] = S.fractalPebbles; u.fractal[3] = S.fractalFinest;
         uint32_t nd = 0;

@@ -133,12 +133,13 @@ void placeRocks(const PlacementCtx& c) {
     }
     numBreakableRocks = numRocks;
     // river rocks (terrain.h riverRock): fixed layout the water shader also evaluates
+    for (int k = 0; k < RIVER_ROCK_CHANNELS; k++)  // every channel: main, braids, tributaries
     for (int i = (int)floorf((cam.pos.x - RR) / RIVER_ROCK_L); i <= (int)floorf((cam.pos.x + RR) / RIVER_ROCK_L) && numRocks < (uint32_t)MAX_ROCKS; i++) {
         float x, y, z, sc;
-        if (!riverRock(i, x, y, z, sc)) continue;
+        if (!riverRock(i, k, x, y, z, sc)) continue;
         float far = std::min(RR, 2.f * sc / (pixAngle * keepPx));
         if ((x - cam.pos.x) * (x - cam.pos.x) + (z - cam.pos.z) * (z - cam.pos.z) > far * far) continue;
-        float yaw = hash2(i, 863) * 6.2831853f, c = cosf(yaw) * sc, sn = sinf(yaw) * sc;
+        float yaw = hash2(i + k * 1000003, 863) * 6.2831853f, c = cosf(yaw) * sc, sn = sinf(yaw) * sc;
         float m[3][4] = {{c, 0, sn, x}, {0, sc, 0, y}, {-sn, 0, c, z}};
         uint32_t var = rockVarOf(x, z);
         setRockInstance(inst[INST_MODELS + numModelInst + numRocks], var, m);

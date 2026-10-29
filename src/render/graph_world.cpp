@@ -103,6 +103,12 @@ void addWorldPasses(const FrameGraphCtx& f) {
                        VK_ACCESS_SHADER_READ_BIT);
         }).write(terrain, CS, RW);
     }
+    if (!vtUploadTiles.empty())  // tiles the integrated GPU generated: only copies here
+        g.add("ground VT upload", GFX, [](VkCommandBuffer cb) {
+            recordGroundVTUpload(cb);
+            memBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                       VK_ACCESS_SHADER_READ_BIT);
+        }).write(terrain, XFER, XW);
     if (terrainDirty)
         g.add("terrain", GFX, [=](VkCommandBuffer cb) { bind(cb); dispatch(cb, P_TERRAIN, (terrainLevels * TERRAIN_LEVEL_VERTS + 63) / 64, 1); }).write(terrain, CS, WR);
     if (S.windMap)

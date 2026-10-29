@@ -13,6 +13,7 @@
 
 #include "app/settings.h"
 #include "vegetation/trees.h"
+#include "world/terrain.h"
 
 namespace {
 constexpr const char* SETTINGS_FILE = "settings.ini";
@@ -30,12 +31,13 @@ template <class T> constexpr char typeOf() {
 #define SF(x) FIELD(Settings, x)
 #define TF(x) FIELD(trees::TreeParams, x)
 #define BF(x) FIELD(trees::BushParams, x)
+#define WF(x) FIELD(BiomeParams, x)
 
 // every Settings field but the debug view mode
 const Field SETTINGS_FIELDS[] = {
-    SF(raysFirst), SF(bounces), SF(rasterPrimary), SF(restir), SF(restirTemporal), SF(restirSpatial),
+    SF(raysFirst), SF(bounces), SF(rasterPrimary), SF(occlusionCull), SF(worldSeed), SF(hilliness), SF(riverWidthVar), SF(riverBraids), SF(riverTribs), SF(godRays), SF(cloudDiv), SF(restir), SF(restirTemporal), SF(restirSpatial),
     SF(candidates), SF(spatialSamples), SF(spatialRadius), SF(restirGI), SF(giTemporal), SF(giSpatial),
-    SF(giEnabled), SF(giCache), SF(giChecker), SF(giProbes), SF(giSpatialSamples), SF(giRadius),
+    SF(giEnabled), SF(giCache), SF(giChecker), SF(giCheckerCell), SF(giProbes), SF(giSpatialSamples), SF(giRadius),
     SF(giMaxM), SF(accumulate), SF(denoise), SF(historyMax), SF(atrousIters), SF(fireflyClamp),
     SF(sunElev), SF(sunAzim), SF(sunIntensity), SF(sunRadiusDeg), SF(skyIntensity), SF(fogScale),
     SF(dayCycle), SF(timeOfDay), SF(dayMinutes), SF(dayOfYear), SF(weatherCycle), SF(weatherChange),
@@ -79,6 +81,12 @@ const Field BUSH_FIELDS[] = {
     BF(size), BF(stems), BF(spread), BF(branchAngle), BF(gnarl), BF(levels),
     BF(leafSize), BF(leafDensity), BF(leafColor), BF(fruitDensity), BF(fruitSize), BF(fruitColor),
     BF(seed),
+};
+
+const Field BIOME_FIELDS[] = {
+    WF(on), WF(amount), WF(size), WF(blend), WF(spawn), WF(temp), WF(moist), WF(ocean), WF(oceanScale), WF(seaLevel),
+    WF(oceanDepth), WF(beach), WF(lakes), WF(lakeSize), WF(ponds), WF(duneH), WF(duneL), WF(wind), WF(mesaH),
+    WF(terrace), WF(canyonD), WF(mountainH), WF(glacierH), WF(volcanoH), WF(karstH), WF(relief),
 };
 
 bool persist = true;
@@ -137,6 +145,7 @@ std::string compose() {
         for (const Field& f : TREE_FIELDS) out += "tree." + std::to_string(s) + "." + f.name + " = " + format(f, &trees::treeParams[s]) + "\n";
     for (int k = 0; k < trees::BUSH_KINDS; k++)
         for (const Field& f : BUSH_FIELDS) out += "bush." + std::to_string(k) + "." + f.name + " = " + format(f, &trees::bushParams[k]) + "\n";
+    for (const Field& f : BIOME_FIELDS) out += std::string("biome.") + f.name + " = " + format(f, &gBiome) + "\n";
     return out;
 }
 }  // namespace
@@ -164,6 +173,10 @@ void loadSettings() {
     }
     fclose(fp);
     lastWritten = text;
+    for (const Field& f : BIOME_FIELDS) {
+        auto it = loaded.find(std::string("biome.") + f.name);
+        if (it != loaded.end()) parse(f, &gBiome, it->second);
+    }
     for (const Field& f : SETTINGS_FIELDS) {
         auto it = loaded.find(f.name);
         if (it != loaded.end()) parse(f, &S, it->second);
@@ -173,6 +186,15 @@ void loadSettings() {
 }
 
 void markFlagsApplied() { flagS = S; }
+
+bool setSetting(const char* kv) {
+    const char* eq = strchr(kv, '=');
+    if (!eq) return false;
+    std::string name(kv, eq - kv);
+    for (const Field& f : SETTINGS_FIELDS)
+        if (name == f.name) { parse(f, &S, eq + 1); return true; }
+    return false;
+}
 
 void applyVegetationSettings() {
     if (!persist) return;

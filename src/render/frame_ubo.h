@@ -62,5 +62,11 @@ struct UBO {
     float fireInfo[4];                      // x fires
     float pushers[2 * MAX_PUSHERS][4];      // grass.comp: [2i] xyz, radius; [2i+1] x flattening 0..1
     float pushInfo[4];                      // x pushers
+    int32_t cloudRes[4];                    // cloud.comp: resolution divisor, grid width, height
+    float river2[4];                        // river.glsl: x width variation, y braids, z tributaries, w hilliness
+    float riverShape[4], riverShape2[4];    // river.glsl meander: a1, a2, f1, f2; p1, p2, -, -
+    uint32_t worldSeed[4];                  // noise.glsl: x hash mix (terrain.h gSeedMix)
+    float biomeA[4][4];                     // biome.glsl: per-biome amounts (biome.h BiomeParams::amount)
+    float biomeP[7][4];                     // biome.glsl: the rest of BiomeParams (layout in biome.glsl)
 };
 static_assert(sizeof(UBO) <= 65536, "the frame UBO must fit maxUniformBufferRange");

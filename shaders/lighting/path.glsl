@@ -62,7 +62,7 @@ vec3 tracePath(vec3 x0, vec3 n0, vec3 d, uint B, uint lFirst, uint lCount, vec2 
     for (uint b = 0u; b < B; b++) {
         if (b > 0u) { d = cosineSample(nn, s); o += nn * EPS; }
         Hit h = traceClosest(o, d, 1e4, cone);
-        if (!h.hit) { L += thr * sky(d); break; }
+        if (!h.hit) { L += thr * (d.y < 0.0 ? sky(d) : skyAtmo(d)); break; }  // (bounce light: the far peaks above the horizon are too small to matter)
         if (h.trans > 0.5 && glass < 8u) {  // through the glass: refract in (or out, hitting a back face)
             thr *= mix(vec3(1), h.albedo, h.trans);
             vec3 r = refract(d, h.n, h.back ? h.ior : 1.0 / h.ior);

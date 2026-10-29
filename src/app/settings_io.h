@@ -10,4 +10,5 @@ void markFlagsApplied();          // after the command line: what the flags chan
 void applyVegetationSettings();   // after trees::defaults(): the remembered tree / bush parameters
 void saveSettingsIfChanged(double now);
 void saveSettings();
-void setSettingsPersistence(bool on);  // off: neither load nor save
+void setSettingsPersistence(bool on);
+bool setSetting(const char* nameEqValue);  // "name=value" (settings.ini names); false if no such setting  // off: neither load nor save

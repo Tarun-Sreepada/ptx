@@ -114,6 +114,19 @@ void updateThrown(float dt) {
         // settled debris retires: chips after a few seconds at rest, bigger pieces once out of the way. Every piece
         // is its own body and BLAS, so a few hundred of them cost GI / BVH time for nothing.
         float sp2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        // A rock never gains energy, only trades height for speed: being pushed out of the tree pieces that spawn
+        // around it after a break (or any other overlap) can't launch it. The cap ratchets down with every loss.
+        if (!t.woodPart) {
+            constexpr float E_SLACK = 20.f;  // J/kg of leeway (~6 m/s, or 2 m of height)
+            float g = 9.8f * t.xf.m[1][3], e = 0.5f * sp2 + g;
+            if (t.eMax < 0.f) t.eMax = e + E_SLACK;
+            else if (e > t.eMax && sp2 > 1e-4f) {
+                float k = sqrtf(std::max(2.f * (t.eMax - g), 0.f) / sp2);
+                for (float& c : v) c *= k;
+                physics::setVelocity(t.body, v);
+                sp2 *= k * k;
+            } else t.eMax = std::min(t.eMax, e + E_SLACK);
+        }
         t.rest = sp2 < 0.04f ? t.rest + dt : 0.f;
         if (t.frag || t.wood) {
             float cdx = t.xf.m[0][3] - cam.pos.x, cdz = t.xf.m[2][3] - cam.pos.z, cd2 = cdx * cdx + cdz * cdz;

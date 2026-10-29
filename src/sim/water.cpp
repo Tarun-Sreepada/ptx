@@ -25,7 +25,8 @@ float waterLevelAt(float x, float z) {
         float dx = x - gCraters[i].x, dz = z - gCraters[i].z, r = gCraters[i].r * 1.2f;
         if (dx * dx + dz * dz < r * r) return craterWater[i].pond ? craterWater[i].level : -1e9f;
     }
-    if (fabsf(z - riverCenter(x)) > 3.f * gRiver.width + 1.f) return -1e9f;
+    float sw = standingWaterAt(x, z);  // sea, lakes, ponds (biome.h)
+    if (sw > -1e8f && sw > heightFn(x, z)) return sw;
     RiverInfo ri = riverInfo(x, z);
     return fabsf(ri.d) < ri.w + 1.f + 2.f * riverSwell ? ri.level + riverSwell : -1e9f;
 }

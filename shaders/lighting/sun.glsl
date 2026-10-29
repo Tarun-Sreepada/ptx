@@ -28,8 +28,8 @@ vec3 underwaterSun(vec3 x) {
     vec3 rd = refract(-F.sunDir.xyz, vec3(0, 1, 0), 1.0 / 1.33);
     float path = depth / max(-rd.y, 0.2);
     vec2 e = x.xz - rd.xz * path;  // where the sunlight entered the water
-    float dz = riverSlope(e.x);
-    vec4 ri = riverInfo(e);
+    float dz;
+    vec4 ri = riverInfoS(e, dz);
     // the river's current carries the net downstream; a still pond's only shimmers in place (ripples from the wind)
     vec2 flow = abs(ri.x) > ri.y + 1.0 ? vec2(0.11, 0.07) * (0.3 + F.wind.z)
                                        : vec2(1.0, dz) * inversesqrt(1.0 + dz * dz) * F.water.x * 0.9;

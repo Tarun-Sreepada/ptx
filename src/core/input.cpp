@@ -37,6 +37,9 @@ void init() {
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM_HORI, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // SDL would turn SIGINT / SIGTERM into a quit event nobody reads (the window is GLFW's): Ctrl+C, kill and
+    // timeout must still end the process
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (!SDL_Init(SDL_INIT_GAMEPAD | SDL_INIT_SENSOR)) {
         fprintf(stderr, "SDL gamepad init failed: %s\n", SDL_GetError());
         return;

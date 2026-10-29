@@ -11,19 +11,26 @@ const int MAX_NEAR_ROCKS = 16;  // up to 9 placed + thrown ones in reach
 int nearRocks(vec2 p, float level, out RockW rk[MAX_NEAR_ROCKS]) {
     int n = 0, ci = int(floor(p.x / RIVER_ROCK_L));
     int up = int(ceil(F.water2.x / RIVER_ROCK_L)) + 1;  // wakes trail downstream (+x): look as far upstream as they reach
+    // only the channels this point could be near (rocks lie within their channel)
+    vec4 chs[4];
+    int nch = riverChannels(p.x, chs);
+    for (int kc = 0; kc < nch; kc++) {
+    if (abs(p.y - chs[kc].x) > 3.0 * F.river.x * chs[kc].z + 8.0) continue;
     for (int i = ci - up; i <= ci + 1 && n < MAX_NEAR_ROCKS; i++) {
         vec4 r;
-        if (!riverRock(i, r)) continue;
+        float dz;
+        if (!riverRock(i, kc, r, dz)) continue;
         RockW k;
         k.sub = level - (r.y + 0.72 * r.w);
         if (k.sub > 1.0 * r.w + 0.3) continue;  // too deep to show on the surface
-        float dz = riverSlope(r.x), hh = (level - r.y) / (0.72 * r.w);
+        float hh = (level - r.y) / (0.72 * r.w);
         k.c = r.xz;
         k.dir = vec2(1.0, dz) * inversesqrt(1.0 + dz * dz);
         k.sc = r.w;
         k.u = -1.0;
         k.R = k.sub < 0.0 ? 0.95 * r.w * sqrt(clamp(1.0 - hh * hh, 0.05, 1.0)) : 0.0;
         rk[n++] = k;
+    }
     }
     // thrown rocks lying in the water act like placed ones (tumbling ones too, as an approximation)
     for (uint i = 0u; i < F.dynInfo.x && n < MAX_NEAR_ROCKS; i++) {

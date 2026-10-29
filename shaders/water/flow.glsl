@@ -9,10 +9,10 @@ const float WATER_PERIOD = 2.0;  // flow-map reset period (s)
 struct Flow { vec2 v; float speed, shear; vec4 r; };  // r = riverInfo
 Flow riverFlow(vec2 p) {
     Flow f;
-    f.r = riverInfo(p);
+    float dz;
+    f.r = riverInfoS(p, dz);  // dz: the direction of the channel this point is in
     float drop;
     float divK = F.dynInfo.z > 0u ? riverDiversion(p.x, drop) : 1.0;
-    float dz = riverSlope(p.x);
     vec2 dir = vec2(1.0, dz) * inversesqrt(1.0 + dz * dz);
     float c = min(abs(f.r.x) / f.r.y, 1.0);
     // more water after rain runs faster (the swell over the channel depth, roughly)

@@ -8,6 +8,7 @@
 #include "world/world.h"
 #include "app/settings.h"
 #include "sim/world_sim.h"
+#include "scene/ground_mask.h"
 
 // Craters next to the river fill from it instead of appearing full: the water level rises as river water pours in
 // (a share of the river's discharge, falling off with the remaining head), and while it does, that share is
@@ -61,4 +62,38 @@ void groundSurfaceAt(const float p[3], float& f, float& e) {
             e *= 1.f - sk;
         }
     }
+}
+
+static int footOfMaterial(const std::string& n) {
+    auto has = [&](const char* k) { return n.find(k) != std::string::npos; };
+    if (has("wood") || has("plank")) return FOOT_WOOD;
+    if (has("stone") || has("rock") || has("concrete") || has("asphalt") || has("paving") || has("brick") || has("tile") ||
+        has("cobble") || has("metal") || has("ice")) return FOOT_CONCRETE;
+    if (has("grass") || has("moss")) return FOOT_GRASS;
+    return FOOT_DIRT;  // sand, gravel, mud, soil
+}
+
+int footSurfaceAt(const float p[3], float feetAbove, float wade) {
+    float x = p[0], z = p[2];
+    if (wade > 0.01f) return FOOT_WATER;
+    if (feetAbove > 0.12f) return FOOT_CONCRETE;  // on something built (floors, prims, rocks)
+    if (!std::isfinite(x) || !std::isfinite(z)) return FOOT_DIRT;
+    int cx = (int)floorf((x - worldmap::ORIGIN) / worldmap::CELL), cz = (int)floorf((z - worldmap::ORIGIN) / worldmap::CELL);
+    if (simSnapValid) {
+        int i = cx - simSnapX, k = cz - simSnapZ;
+        if (i >= 0 && k >= 0 && i < SIM_RB && k < SIM_RB && simSnap[k * SIM_RB + i][0] > 0.04f) return FOOT_SNOW;
+    }
+    const auto& zs = stream::zones();
+    if (zoneCover(x, z, zs.data(), (int)zs.size()) > 0.5f) {  // city ground: paved unless it has its own texture
+        for (auto& zn : zs) if (zoneWeight(zn, x, z) > 0.5f && !zn.mat.empty()) return footOfMaterial(zn.mat);
+        return FOOT_CONCRETE;
+    }
+    float grass = grassMaskCPU(x, z);
+    if (cx >= 0 && cz >= 0 && cx < worldmap::N && cz < worldmap::N) {
+        const worldmap::Paint& pt = worldmap::paintData()[(size_t)cz * worldmap::N + cx];
+        if (pt.mat && pt.matW > 128 && !worldmap::paletteName(pt.mat).empty()) return footOfMaterial(worldmap::paletteName(pt.mat));
+        grass *= std::min(pt.grass / 128.f, 1.f);
+    }
+    if (inCrater(x, z, 0.f)) return FOOT_DIRT;
+    return grass > 0.35f ? FOOT_GRASS : FOOT_DIRT;
 }

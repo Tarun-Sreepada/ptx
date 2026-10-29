@@ -19,3 +19,9 @@ extern Buffer vtTileBuf;
 extern uint32_t vtVersion, vtQueued;
 
 void updateGroundVT(float (*rect)[4]);
+
+// tiles finished on the integrated GPU (gpu/offload.h) waiting to be copied in this frame
+#include <vector>
+extern std::vector<VtTileReq> vtUploadTiles;
+
+void recordGroundVTUpload(VkCommandBuffer cb);

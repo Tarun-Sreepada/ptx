@@ -331,6 +331,8 @@ void applyPendingResolution() {
 bool runFrame(const LaunchOptions& o) {
     if (glfwWindowShouldClose(window)) return false;
     if (profFrames > 0 && frameIndex == PROF_START_FRAME) prof::toggleCapture();
+    // --prof: the capture is done, quit (main.cpp writes the trace on the way out)
+    if (profFrames > 0 && frameIndex > PROF_START_FRAME + 1 && !prof::capturing && prof::hasCapture()) return false;
     prof::frameBegin();
     PROF_ZONE("frame");
     if (float sf = prof::slowFps(); sf > 0.f) {  // slow motion (Profiler window)

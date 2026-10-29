@@ -97,12 +97,19 @@ void crickets() {
 void river() {
     static uint32_t em = UINT32_MAX;
     // nearest point of the river's centre line (it runs along x)
-    float bx = cam.pos.x, bd = 1e30f;
+    // nearest point of any wet channel's centre line (they all run along x): main, braids, tributaries
+    float bx = cam.pos.x, bz = riverCenter(cam.pos.x), bd = 1e30f;
     for (int k = -8; k <= 8; k++) {
-        float x = cam.pos.x + k * 10.f, dz = riverCenter(x) - cam.pos.z, d2 = (x - cam.pos.x) * (x - cam.pos.x) + dz * dz;
-        if (d2 < bd) { bd = d2; bx = x; }
+        float x = cam.pos.x + k * 10.f;
+        RiverChan ch[4];
+        int n = riverChannels(x, ch);
+        for (int c = 0; c < n; c++) {
+            if (!riverWet(ch[c])) continue;
+            float dz = ch[c].c - cam.pos.z, d2 = (x - cam.pos.x) * (x - cam.pos.x) + dz * dz;
+            if (d2 < bd) { bd = d2; bx = x; bz = ch[c].c; }
+        }
     }
-    float z = riverCenter(bx), dist = sqrtf(bd);
+    float z = bz, dist = sqrtf(bd);  // (no wet channel in reach: bd stays huge, so the gain is 0)
     V3 at{bx, riverInfo(bx, z).level, z};
     float gain = S.ambience ? std::clamp(1.f - dist / RIVER_HEAR, 0.f, 1.f) * (0.3f + 0.7f * std::min(S.flow, 2.f)) * 0.7f : 0.f;
     loop(em, audio::SND_RIVER, at, gain);

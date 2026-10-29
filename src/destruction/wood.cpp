@@ -17,6 +17,8 @@
 #include "destruction/thrown.h"
 #include "destruction/tree_break.h"
 #include "destruction/tree_damage.h"
+#include "app/frame_state.h"
+#include <unordered_map>
 #include "gpu/memory.h"
 #include "scene/models.h"
 #include "scene/vegetation.h"
@@ -55,16 +57,62 @@ uint32_t woodSeed(const TreeInst& t) { return (uint32_t)(t.ix * 73856093) ^ (uin
 
 std::vector<WoodReq> pendingWood;
 
+// ---- early pruning: what could be hit at all
+// An undamaged tree's wood per variant, built once per tree build (woodWhole allocates; it ran per candidate tree)
+static const trees::Wood& wholeWood(int v) {
+    static std::vector<trees::Wood> cache;
+    static uint32_t gen = UINT32_MAX;
+    if (gen != trees::buildGen) { cache.assign(trees::VARIANTS, {}); for (int i = 0; i < trees::VARIANTS; i++) trees::woodWhole(i, cache[i]); gen = trees::buildGen; }
+    return cache[v];
+}
+
+// procedural trees bucketed in 8 m cells, rebuilt at most once a frame (placement rewrites treeList as you move);
+// queries only look at the cells a sphere overlaps instead of every tree
+constexpr float TREE_CELL = 8.f;
+static std::unordered_map<uint64_t, std::vector<uint32_t>> treeGrid;
+static float treeGridR = 0.f;  // widest tree's reach (m), added to every query
+static uint64_t cellKey(int x, int z) { return ((uint64_t)(uint32_t)x << 32) | (uint32_t)z; }
+template <class Fn> static void treesNear(V3 p, float r, Fn&& fn) {
+    static uint32_t built = UINT32_MAX;
+    static const TreeInst* data = nullptr;
+    static size_t count = 0;
+    if (built != frameIndex || data != treeList.data() || count != treeList.size()) {
+        built = frameIndex; data = treeList.data(); count = treeList.size();
+        for (auto& [k, v] : treeGrid) v.clear();
+        treeGridR = 0.f;
+        for (uint32_t i = 0; i < treeList.size(); i++) {
+            const TreeInst& t = treeList[i];
+            if (t.v >= (uint32_t)trees::VARIANTS) continue;
+            treeGrid[cellKey((int)floorf(t.p.x / TREE_CELL), (int)floorf(t.p.z / TREE_CELL))].push_back(i);
+            treeGridR = std::max(treeGridR, treeR[t.v] * 2.f * t.scale);
+        }
+    }
+    float R = r + treeGridR;
+    int x0 = (int)floorf((p.x - R) / TREE_CELL), x1 = (int)floorf((p.x + R) / TREE_CELL);
+    int z0 = (int)floorf((p.z - R) / TREE_CELL), z1 = (int)floorf((p.z + R) / TREE_CELL);
+    for (int z = z0; z <= z1; z++)
+        for (int x = x0; x <= x1; x++) {
+            auto it = treeGrid.find(cellKey(x, z));
+            if (it != treeGrid.end()) for (uint32_t i : it->second) if (fn(treeList[i])) return;
+        }
+}
+
+// below this kinetic energy (J) nothing an impactor does to a limb can matter: no break, at most a few leaves
+constexpr float STRIKE_MIN_J = 40.f;
+// trees broken (re-cut, pieces spawned) per frame; more blows wait a frame (a shattered rock's shower of chunks)
+constexpr int WOOD_BREAKS_PER_FRAME = 3;
+
 // A rock / wood piece / blast of mass at world point at with velocity vel against tree t. True if it touched the
 // wood; then a break or leaf fall is queued and an impactor that broke through keeps the rest of its momentum.
 bool strikeTree(const TreeInst& t, V3 at, V3 vel, float mass, V3* took) {
     uint64_t key = treeKey(t.ix, t.iz);
     auto dt = damagedTrees.find(key);
-    trees::Wood whole;
     const trees::Wood* w = nullptr;
     if (dt != damagedTrees.end()) w = &dt->second.second;
-    else if (!brokenTrees.count(key)) { trees::woodWhole((int)t.v, whole); w = &whole; }
+    else if (!brokenTrees.count(key)) w = &wholeWood((int)t.v);
     if (!w) return false;
+    // already queued to break this frame: the earlier blow decides (a shower of chunks would each re-cut it)
+    for (auto& q : pendingWood) if (q.body == UINT32_MAX && q.t.ix == t.ix && q.t.iz == t.iz) return true;
     WoodFrame F = treeFrame(t);
     V3 lp = worldToWood(F, at), lv = woodRotT(F, vel);
     trees::WoodHit h = trees::woodStrike(*w, t.scale, &lp.x, &lv.x, mass);
@@ -79,18 +127,21 @@ bool strikeTree(const TreeInst& t, V3 at, V3 vel, float mass, V3* took) {
 
 // Rock (or wood piece) at contact point pc: the nearest procedural tree surface within reach takes the blow.
 bool strikeTrees(V3 pc, V3 vel, float mass, float reach) {
+    if (0.5f * mass * dot(vel, vel) < STRIKE_MIN_J) return false;
     const TreeInst* best = nullptr;
     float bd = reach;
     auto test = [&](const TreeInst& tr, const trees::Wood* w) {
         float dx = pc.x - tr.p.x, dz = pc.z - tr.p.z, R = treeR[tr.v] * 2.f * tr.scale + reach;
         if (dx * dx + dz * dz > R * R) return;
-        trees::Wood whole;
-        if (!w) { trees::woodWhole((int)tr.v, whole); w = &whole; }
+        if (!w) {
+            if (brokenTrees.count(treeKey(tr.ix, tr.iz))) return;  // its stump / damaged wood is tested below
+            w = &wholeWood((int)tr.v);
+        }
         V3 lp = worldToWood(treeFrame(tr), pc);
         float d;
         if (trees::woodNearest(*w, &lp.x, d) >= 0 && d * tr.scale < bd) { bd = d * tr.scale; best = &tr; }
     };
-    for (const TreeInst& tr : treeList) if (tr.v < (uint32_t)trees::VARIANTS) test(tr, nullptr);
+    treesNear(pc, reach, [&](const TreeInst& tr) { test(tr, nullptr); return false; });
     for (auto& [k, dw] : damagedTrees) test(dw.first, &dw.second);
     if (!best) return false;
     TreeInst t = *best;
@@ -101,13 +152,16 @@ bool strikeTrees(V3 pc, V3 vel, float mass, float reach) {
 // in the way takes the blow like any other hit, and the rock loses the momentum it gave the wood.
 void sweepThinLimbs(Thrown& t, V3 p0, V3 p1, V3 vel, float mass) {
     if (treeList.empty() && damagedTrees.empty()) return;
+    if (0.5f * mass * dot(vel, vel) < STRIKE_MIN_J) return;
     V3 mid = (p0 + p1) * 0.5f;
     float half = sqrtf(dot(p1 - p0, p1 - p0)) * 0.5f;
     auto test = [&](const TreeInst& tr, const trees::Wood* w) {
         float dx = mid.x - tr.p.x, dz = mid.z - tr.p.z, R = treeR[tr.v] * 2.f * tr.scale + half + t.radius;
         if (dx * dx + dz * dz > R * R) return false;
-        trees::Wood whole;
-        if (!w) { trees::woodWhole((int)tr.v, whole); w = &whole; }
+        if (!w) {
+            if (brokenTrees.count(treeKey(tr.ix, tr.iz))) return false;
+            w = &wholeWood((int)tr.v);
+        }
         WoodFrame F = treeFrame(tr);
         V3 a = worldToWood(F, p0), b = worldToWood(F, p1), at;
         if (trees::woodSweep(*w, &a.x, &b.x, t.radius * 0.8f / tr.scale, &at.x) < 0) return false;
@@ -119,7 +173,9 @@ void sweepThinLimbs(Thrown& t, V3 p0, V3 p1, V3 vel, float mass) {
         memcpy(t.v, &nv.x, 12);
         return true;
     };
-    for (const TreeInst& tr : treeList) if (tr.v < (uint32_t)trees::VARIANTS && test(tr, nullptr)) return;
+    bool hit = false;
+    treesNear(mid, half + t.radius, [&](const TreeInst& tr) { return hit = test(tr, nullptr); });
+    if (hit) return;
     for (auto& [k, dw] : damagedTrees) if (test(dw.first, &dw.second)) return;
 }
 
@@ -245,7 +301,10 @@ static std::vector<uint32_t> spawnWoods(std::vector<WoodSpawn>& ws, const WoodFr
 void processWood() {
     std::vector<WoodReq> wq;
     wq.swap(pendingWood);
+    int breaks = 0;
     for (WoodReq& q : wq) {
+        if (breaks >= WOOD_BREAKS_PER_FRAME) { pendingWood.push_back(std::move(q)); continue; }  // next frame
+        breaks++;
         std::vector<trees::Wood> off;
         std::vector<float> shed;
         std::vector<WoodSpawn> ws;

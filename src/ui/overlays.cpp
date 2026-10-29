@@ -17,6 +17,7 @@
 #include "render/bake.h"
 #include "scene/camera.h"
 #include "tools/screenshot.h"
+#include "ui/world_map.h"
 
 namespace {
 constexpr float HINT_MARGIN = 10.f;
@@ -97,6 +98,7 @@ void helpWindow(bool* open) {
             row("F9", "Profiler: capture frames (flame chart)");
             row("F8", "Profiler window");
             row("F1", "This list");
+            row("M", "World map (click: marker, right-click: teleport)");
             ImGui::EndTable();
         }
         ImGui::TextDisabled("Reopen a screenshot's scene: ./build/ptx --from-shot <file.png>");
@@ -163,4 +165,5 @@ void drawOverlays() {
     screenshotKeys();
     editorToggle();
     lightSwitch();
+    worldmap_ui::window();
 }

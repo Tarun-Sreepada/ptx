@@ -1,3 +1,4 @@
+#include "gpu/offload.h"
 #include "app/cli.h"
 #include "sim/fire.h"
 #include "sky/day_cycle.h"
@@ -30,6 +31,7 @@
 #include "tools/movelog.h"
 #include "world/texcomp.h"
 #include "world/terrain.h"
+#include "world/terrain_query.h"
 
 int profFrames = 0;
 bool mapTest = false;
@@ -74,6 +76,8 @@ std::vector<Flag> flags(LaunchOptions& o) {
         {"--dlss", 1, "<0..5>  DLSS-RR mode (0 off, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra perf.)",
          [](char** a) { upscaler = (dlss::Mode)std::clamp(i(a[0]), 0, (int)dlss::MODE_COUNT - 1); }},
         // ---- camera
+        {"--seed", 1, "<n>  world seed (0 = the original world)", [](char** a) { S.worldSeed = std::max(atoi(a[0]), 0); }},
+        {"--hilliness", 1, "<0..1>  rolling hills", [](char** a) { S.hilliness = std::clamp(f(a[0]), 0.f, 1.f); }},
         {"--pos", 3, "<x y z>  camera position", [](char** a) { cam.pos = {f(a[0]), f(a[1]), f(a[2])}; }},
         {"--look", 2, "<yaw pitch>  camera direction (degrees)", [](char** a) { cam.yaw = f(a[0]) * DEG; cam.pitch = f(a[1]) * DEG; }},
         {"--walk", 0, "start walking (first person)", [](char**) { walkMode = true; }},
@@ -87,8 +91,11 @@ std::vector<Flag> flags(LaunchOptions& o) {
         {"--no-gi-checker", 0, "", [](char**) { S.giChecker = false; }},
         {"--no-gi-probes", 0, "", [](char**) { S.giProbes = false; }},
         {"--no-baked-gi", 0, "ignore the baked interior probes", [](char**) { bakedGI = false; }},
-        {"--no-async", 0, "no async compute (BVH build on the graphics queue)", [](char**) { asyncCompute = false; }},
+        {"--no-async", 0, "no async compute at all", [](char**) { asyncCompute = false; }},
+        {"--async-bvh", 0, "BVH build on the async compute queue (off by default: slower here)", [](char**) { asyncBVH = true; }},
         {"--no-async-fog", 0, "", [](char**) { asyncFog = false; }},
+        {"--async-fog", 0, "volumetric fog on the async compute queue (off by default: slower here)", [](char**) { asyncFog = true; }},
+        {"--no-igpu", 0, "keep generators (ground VT) on the main GPU, no integrated GPU offload", [](char**) { igpu::enabled = false; }},
         {"--no-sss", 0, "no subsurface scattering", [](char**) { S.sss = false; }},
         {"--no-micro", 0, "no micro-shadowing / specular occlusion", [](char**) { S.microShadow = false; }},
         {"--no-grass-refit", 0, "rebuild the grass BLAS every frame", [](char**) { S.grassRefit = false; }},
@@ -121,7 +128,7 @@ std::vector<Flag> flags(LaunchOptions& o) {
         {"--wet", 3, "<film> <soak> <drip>  surface water without rain (drying state)",
          [](char** a) { S.wetness = f(a[0]); S.soak = f(a[1]); S.drip = f(a[2]); S.rainWets = false; }},
         {"--fog", 1, "<density /m>  volumetric fog", [](char** a) { S.fogDensity = f(a[0]); S.fog = S.fogDensity > 0.f; }},
-        {"--fog-div", 1, "<1..4>  fog resolution divisor", [](char** a) { S.fogDiv = i(a[0]); }},
+        {"--fog-div", 1, "<1..128>  fog resolution divisor", [](char** a) { S.fogDiv = i(a[0]); }},
         {"--snow-line", 1, "<m>  fixed snow line", [](char** a) { S.snowLine = f(a[0]); S.snowFollowsClouds = false; }},
         {"--snowfall", 1, "<m/h>  at full precipitation", [](char** a) { S.snowfall = f(a[0]); }},
         {"--sim-speed", 1, "<x>  world simulation time scale", [](char** a) { S.simSpeed = f(a[0]); }},
@@ -139,6 +146,9 @@ std::vector<Flag> flags(LaunchOptions& o) {
         {"--throw", 1, "<n>  throw n rocks, one every 20 frames", [](char** a) { autoThrow = i(a[0]); }},
         {"--tree-throw", 1, "<n>  throw n rocks at the nearest tree, log every hit", [](char** a) { treeThrow = i(a[0]); treeLog = true; }},
         {"--throw-size", 1, "<m>", [](char** a) { S.throwSize = f(a[0]); }},
+        {"--set", 1, "<name=value>  any setting, by its settings.ini name (repeatable)",
+         [](char** a) { if (!setSetting(a[0])) fprintf(stderr, "--set: no setting %s\n", a[0]); }},
+        {"--throw-speed", 1, "<m/s>", [](char** a) { S.throwSpeed = f(a[0]); }},
         {"--throw-speed", 1, "<m/s>", [](char** a) { S.throwSpeed = f(a[0]); }},
         {"--fire", 3, "<x z radius>  a fire burning from the start (repeatable)", [](char** a) {
              requestFire(f(a[0]), f(a[1]), f(a[2]), 600.f);
@@ -186,5 +196,6 @@ bool parseArgs(int argc, char** argv, LaunchOptions& o) {
         k += hit->args;
     }
     markFlagsApplied();
+    applyWorldGen();
     return true;
 }

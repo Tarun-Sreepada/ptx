@@ -5,6 +5,10 @@
 struct Settings {
     int raysFirst = 1, bounces = 2;
     bool rasterPrimary = true;
+    bool occlusionCull = true;
+    // world generation (terrain.h gWorld / gRiver): the seed drives the ground, hills, rivers, trees, plants, rocks, dirt
+    int worldSeed = 0;
+    float hilliness = 0.35f, riverWidthVar = 0.6f, riverBraids = 0.45f, riverTribs = 0.5f;  // skip raster draws hidden behind last frame's depth (render/occlusion.h)
     bool restir = true, restirTemporal = true, restirSpatial = true;
     int candidates = 16, spatialSamples = 4;
     float spatialRadius = 20.f;
@@ -12,6 +16,7 @@ struct Settings {
     bool giEnabled = true;  // off: direct light only (I key)
     bool giCache = true;     // radiance cache ends paths after the first secondary hit (radcache.glsl)
     bool giChecker = true;   // new GI candidates in half the pixels per frame (ReSTIR GI fills the rest)
+    int giCheckerCell = 8;   // checkerboard square size (px): 8+ skips whole warps (saves time), smaller looks finer
     bool giProbes = true;    // secondary hits in baked volumes read the probes
     int giSpatialSamples = 4;
     float giRadius = 30.f, giMaxM = 20.f;
@@ -86,7 +91,9 @@ struct Settings {
     float paperWhite = 203.f, peakNits = 1000.f;
     bool grassRefit = true;                          // grass BLAS update in place between rebuilds
     bool fog = true, fogLights = true;               // volumetric fog / god rays (volfog.comp)
-    int fogDiv = 2;                                  // fog resolution = render resolution / fogDiv (1..4)
+    int fogDiv = 8;                                  // fog resolution = render resolution / fogDiv (1..128)
+    bool godRays = true;                             // fog steps take a shadow ray to the sun (off: evenly lit fog, cheaper)
+    int cloudDiv = 2;                                // sky clouds resolution = render resolution / cloudDiv (cloud.comp)
     float fogDensity = 0.0007f, fogFalloff = 0.08f, fogAniso = 0.6f, fogNoise = 0.6f, fogDist = 150.f, fogBlend = 0.12f;
     float rain = 0.f, wetness = 0.f, puddles = 0.f;  // puddles: the old noise-placed ones; the world sim makes real ones  // weather (surface_fx.comp, post.comp)
     bool rainWets = true;                            // wetness follows the rain (dries slowly after)

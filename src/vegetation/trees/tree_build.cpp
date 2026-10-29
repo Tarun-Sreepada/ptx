@@ -5,6 +5,7 @@
 #include "vegetation/trees/foliage.h"
 #include "vegetation/trees/limb_mesh.h"
 #include "vegetation/trees/tree_internal.h"
+#include "world/terrain.h"
 
 namespace trees {
 namespace {
@@ -16,7 +17,7 @@ Plan planCache[VARIANTS];
 bool planValid[VARIANTS] = {};
 TreeParams grownAs[SPECIES];  // each species as this build grows it (the season applied)
 
-uint32_t variantSeed(int v) { return treeParams[v / 2].seed * 7919u + (uint32_t)v * 101u + 13u; }
+uint32_t variantSeed(int v) { return treeParams[v / 2].seed * 7919u + (uint32_t)v * 101u + 13u + gWorld.seed * 2246822519u; }  // + the world seed
 
 uint8_t srgb8(float lin) {
     lin = std::clamp(lin, 0.f, 1.f);
@@ -67,6 +68,7 @@ const Plan& plan(int v) {
 void resetPlans() { for (bool& b : planValid) b = false; }
 
 void build(ModelData& out) {
+    buildGen++;
     for (int s = 0; s < SPECIES; s++) grownAs[s] = seasonal(treeParams[s], s);
     resetPlans();
     resetSkeletons();

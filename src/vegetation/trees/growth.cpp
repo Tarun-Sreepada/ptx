@@ -46,7 +46,7 @@ struct Gen {
         std::vector<float> rad{r0};
         std::vector<int> seg;
         V d = dir, pos = a;
-        float rTip = std::max(r0 * (level == 0 ? 0.08f : 0.3f), TWIG_TIP_R);
+        float rTip = std::max(r0 * (level == 0 ? 0.08f : P.tipTaper), TWIG_TIP_R);
         for (int s = 0; s < nseg; s++) {
             float t = (s + 1.f) / nseg;
             float r1 = r0 + (rTip - r0) * t;
@@ -72,42 +72,42 @@ struct Gen {
         };
         if (level >= P.levels) {  // twig: leaf clusters along its outer part, one at the tip
             if (P.leafDensity <= 0.f) return;  // bare (dead) tree
-            int nc = std::clamp((int)lroundf(1.f + len / std::max(P.leafSpread * 1.2f, 0.1f)), 1, 8);
+            int nc = std::clamp((int)lroundf(1.f + len / std::max(P.leafSpread * 1.2f, 0.1f)), 1, std::max(P.maxClusters, 1));
             for (int i = 0; i < nc; i++) {
-                float t = nc == 1 ? 1.f : 0.3f + 0.7f * i / (nc - 1);
+                float t = nc == 1 ? 1.f : P.leafStart + (1.f - P.leafStart) * i / (nc - 1);
                 V c, dd; float r; int ow;
                 at(t, c, r, dd, ow);
-                int n = std::max(2, (int)lroundf(28.f * P.leafDensity));
+                int n = std::max(2, (int)lroundf(P.leavesPerCluster * P.leafDensity));
                 p.leaves.push_back({F_LEAVES, c, dd, P.leafSpread * (0.6f + 0.4f * t), P.leafSize, n, rng.in(0.f, 1000.f), ow});
             }
             return;
         }
         int n = level == 0 ? P.branches : std::max(1, (int)lroundf(P.children * rng.in(0.7f, 1.2f)));
-        float t0 = level == 0 ? 0.f : 0.2f;
+        float t0 = level == 0 ? 0.f : P.childStart, t1 = level == 0 ? P.branchTop : 0.97f;
         float phi = rng.in(0.f, TAU);
         for (int i = 0; i < n; i++) {
-            float t = t0 + (0.97f - t0) * (i + rng.in(0.f, 0.8f)) / n;
+            float t = t0 + (t1 - t0) * (i + rng.in(0.f, 0.8f)) / n;
             V c, dd; float r; int ow;
             at(t, c, r, dd, ow);
             phi += GOLDEN_ANGLE + rng.in(-0.3f, 0.3f);
             float th = (P.branchAngle + rng.in(-P.angleVar, P.angleVar)) * PI / 180.f;
-            if (level == 0) th *= 0.75f + 0.5f * t;  // lower branches flatter, upper steeper
+            if (level == 0) th *= 1.f - 0.5f * P.tierTilt + P.tierTilt * t;  // lower branches flatter, upper steeper
             V perp = rot(perpTo(dd), dd, phi);
             V cd = norm(dd * cosf(th) + perp * sinf(th));
             float cl;
             if (level == 0) {
                 float ratio = (H - c.y) / std::max(H - boleY, 0.5f);
-                cl = (H - boleY) * P.lengthRatio * shapeRatio(P.crown, ratio) * rng.in(0.85f, 1.15f);
-            } else cl = P.childLength * (len - 0.6f * t * len) * rng.in(0.8f, 1.15f);
+                cl = (H - boleY) * P.lengthRatio * shapeRatio(P.crown, ratio) * rng.in(1.f - P.lengthVar, 1.f + P.lengthVar);
+            } else cl = P.childLength * (len - P.childTaper * t * len) * rng.in(1.f - 1.3f * P.lengthVar, 1.f + P.lengthVar);
             if (cl < 0.05f) continue;
             float cr = std::max(r * P.radiusRatio * (level == 0 ? 0.9f : 1.f), 0.005f);
             branch(c, cd, cl, cr, level + 1, ow, r, dd);
         }
-        if (level > 0 && level == P.levels - 1 && P.leafDensity > 0.f) {  // the outer half of a sub-branch carries leaves between its twigs too
+        if (level > 0 && level == P.levels - 1 && P.leafDensity > 0.f && P.innerLeaves > 0.f) {  // the outer half of a sub-branch carries leaves between its twigs too
             for (float t : {0.55f, 0.8f, 1.f}) {
                 V c, dd; float r; int ow;
                 at(t, c, r, dd, ow);
-                int nn = std::max(2, (int)lroundf(20.f * P.leafDensity));
+                int nn = std::max(2, (int)lroundf(P.leavesPerCluster * 0.72f * P.leafDensity * P.innerLeaves));
                 p.leaves.push_back({F_LEAVES, c, dd, P.leafSpread, P.leafSize, nn, rng.in(0.f, 1000.f), ow});
             }
         }

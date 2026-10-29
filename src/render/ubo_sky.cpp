@@ -92,7 +92,7 @@ void fillCameraSky(UBO& u) {
     u.wind[0] = cosf(wd); u.wind[1] = sinf(wd); u.wind[2] = S.windStrength; u.wind[3] = S.windSpeed;
     u.params[0] = S.exposure; u.params[1] = (float)S.historyMax; u.params[2] = S.fireflyClamp; u.params[3] = S.spatialRadius;
     u.res[0] = W; u.res[1] = H; u.res[2] = frameIndex; u.res[3] = 0;  // light count, filled below
-    u.settings[0] = (uint32_t)S.raysFirst; u.settings[1] = (uint32_t)S.bounces; u.settings[2] = flags(); u.settings[3] = (uint32_t)S.viewMode;
+    u.settings[0] = (uint32_t)S.raysFirst; u.settings[1] = (uint32_t)S.bounces; u.settings[2] = flags(); u.settings[3] = (uint32_t)S.viewMode | (uint32_t)std::clamp(S.giCheckerCell, 1, 32) << 16;  // view mode | checker cell (px)
     u.params2[0] = S.giRadius; u.params2[1] = S.giMaxM; u.params2[2] = S.sunIntensity; u.params2[3] = S.fogScale;
     set4(u.clouds, V3{S.cloudCoverage * S.cumulus, S.cloudDensity, S.cloudSpeed}, S.clouds ? 1.f : 0.f);
     set4(u.clouds2, V3{S.cloudBase, S.cloudThickness, S.cloudShadow}, 0);

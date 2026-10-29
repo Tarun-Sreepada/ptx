@@ -31,7 +31,7 @@ void main() {
         if (g.x >= n || g.y >= n) return;
         cell = F.grassGrid.xy + g;
     }
-    uint seed = hashu(uint(cell.x) * 73856093u ^ hashu(uint(cell.y) * 19349663u + 0x632be5abu));
+    uint seed = hashu(uint(cell.x) * 73856093u ^ hashu(uint(cell.y) * 19349663u + 0x632be5abu + F.worldSeed.x));  // + the world seed
     uint h1 = hashu(seed ^ 0x9e3779b9u), h2 = hashu(seed + 0x7f4a7c15u), h3 = hashu(h2);
     vec2 xz = (vec2(cell) + vec2(float(h1 & 0xFFFFu), float(h1 >> 16)) / 65535.0) * F.grassA.x;
     // clumps: blades are pulled toward a hashed clump centre (tufts with thinner grass between) and splay out of it
@@ -42,12 +42,15 @@ void main() {
     xz = mix(xz, cc, F.grassC.x * 0.55);
     vec2 off = xz - cc;
     float cr = length(off) / cs;  // 0 at the clump centre
-    float d = length(xz - F.camPos.xz);
+    // a sphere of radius grassA.w around the camera: outside it no blade is made, so none is drawn or put in the
+    // BVH (flying up, or looking down from a cliff, the grass below thins away like it does with distance)
     float R = F.grassA.w;
+    if (length(xz - F.camPos.xz) > R && !anim) return;  // (cheap: before the height lookup)
+    vec3 root = vec3(xz.x, terrainHeight(xz) - 0.03, xz.y);
+    float d = length(root - F.camPos.xyz);
     if (d > R && !anim) return;
 
     float lod = min(1.0, F.grassA.z * F.grassA.z / max(d * d, 1e-4)) * smoothstep(R, R * 0.7, d);
-    vec3 root = vec3(xz.x, terrainHeight(xz) - 0.03, xz.y);
     // off-screen (outside the FOV + margin, beyond the keep radius): still emitted for shadows, reflections and
     // bounce light, but thinned to grassB.w of the density; survivors widen so coverage stays about the same
     if (d > F.grassB.z) {

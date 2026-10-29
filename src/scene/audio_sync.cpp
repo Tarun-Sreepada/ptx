@@ -25,6 +25,9 @@
 #include "scene/scene_gpu.h"
 #include "tools/bench.h"
 #include "world/terrain_query.h"
+#include "world/ground_surface.h"
+#include <filesystem>
+#include <string>
 
 std::vector<uint32_t> audioMeshRetire;
 
@@ -85,7 +88,21 @@ void updateAudio(float dt) {
         audio::setTerrain(v.data(), (uint32_t)v.size() / 3, idx.data(), (uint32_t)idx.size() / 3);
     }
 
-    // footsteps every stride while walking on the ground, a heavier one on landing
+    // footsteps every stride while walking on the ground, a heavier one on landing; recorded steps per surface
+    // (world/assets/sounds/footsteps/<surface>/, CC0), the synthesized ones where a folder is empty
+    static std::vector<uint32_t> footSnd[FOOT_COUNT];
+    static bool footInit = false;
+    if (!footInit) {
+        footInit = true;
+        for (int k = 0; k < FOOT_COUNT; k++) {
+            std::error_code ec;
+            std::vector<std::string> files;
+            for (auto& e : std::filesystem::directory_iterator(std::string(WORLD_DIR) + "assets/sounds/footsteps/" + FOOT_NAMES[k], ec))
+                files.push_back(e.path().string());
+            std::sort(files.begin(), files.end());
+            for (auto& f : files) if (uint32_t id = audio::soundLoad(f.c_str()); id != UINT32_MAX) footSnd[k].push_back(id);
+        }
+    }
     static std::mt19937 rng(3);
     std::uniform_real_distribution<float> U(0.f, 1.f);
     static V3 lastFeet = playerFeet;
@@ -97,13 +114,24 @@ void updateAudio(float dt) {
         if (grounded && moved < 1.f) stride += moved;
         float len = moved / std::max(dt, 1e-4f) > 5.f ? 1.0f : 0.75f;
         float wl = waterLevelAt(playerFeet.x, playerFeet.z), wade = wl - playerFeet.y;  // m of water at the feet
+        float speed = moved / std::max(dt, 1e-4f);
+        float feetAbove = playerFeet.y - heightFn(playerFeet.x, playerFeet.z);
+        int surf = footSurfaceAt(&playerFeet.x, feetAbove, wade);
+        auto step = [&](float gain) {
+            const std::vector<uint32_t>& v = footSnd[surf];
+            float run = std::clamp((speed - 2.f) / 4.f, 0.f, 1.f);  // running: harder, a little higher
+            gain *= 0.8f + 0.5f * run;
+            if (v.empty()) audio::emitterPlay(audio::SND_FOOTSTEP0 + (uint32_t)(U(rng) * 3.99f), &playerFeet.x, gain, false, 0.9f + 0.2f * U(rng));
+            else audio::emitterPlay(v[std::min((size_t)(U(rng) * v.size()), v.size() - 1)], &playerFeet.x, gain, false, 0.92f + 0.1f * run + 0.12f * U(rng));
+        };
         if (grounded && stride > len) {
             stride = 0;
+            if (wade > 0.01f) step(0.5f + std::min(wade * 2.f, 0.5f));  // the slosh of the foot in the water
             if (wade > 0.02f) {  // wading: a splash and ripples instead of a footstep, bigger the deeper
                 float v[3] = {d.x / std::max(dt, 1e-4f), -1.5f, d.z / std::max(dt, 1e-4f)};
                 waterImpact(V3{playerFeet.x, wl, playerFeet.z}, std::min(0.15f + wade, 0.8f), v, std::min(0.4f + wade, 1.f));
             } else {
-                audio::emitterPlay(audio::SND_FOOTSTEP0 + (uint32_t)(U(rng) * 3.99f), &playerFeet.x, 0.5f + 0.2f * U(rng), false, 0.9f + 0.2f * U(rng));
+                step(0.5f + 0.2f * U(rng));
                 static bool leftFoot = false;
                 leftFoot = !leftFoot;
                 if (moved > 1e-3f) footstep(playerFeet, atan2f(d.x, d.z), leftFoot);  // a print, and the grass stays trodden
@@ -111,7 +139,10 @@ void updateAudio(float dt) {
         }
         if (grounded && !wasGrounded) {
             if (wade > 0.02f) { float v[3] = {0.f, -4.f, 0.f}; waterImpact(V3{playerFeet.x, wl, playerFeet.z}, 0.5f, v); }
-            else audio::emitterPlay(audio::SND_LAND, &playerFeet.x, 0.9f, false, 0.95f + 0.1f * U(rng));
+            else {
+                audio::emitterPlay(audio::SND_LAND, &playerFeet.x, 0.6f, false, 0.95f + 0.1f * U(rng));  // the thump
+                step(0.9f);                                                                      // and the surface
+            }
         }
     }
     lastFeet = playerFeet;

@@ -60,9 +60,10 @@ void addDebris(uint8_t kind, V3 p, V3 v, float size, float delay) {
 // droplets thrown up and back (only near the camera, where you can see them).
 static void boulderSpray(float dt) {
     if (S.splash <= 0.f || S.flow <= 0.f) return;
+    for (int ch = 0; ch < RIVER_ROCK_CHANNELS; ch++)
     for (int i = (int)floorf((cam.pos.x - 50.f) / RIVER_ROCK_L); i <= (int)floorf((cam.pos.x + 50.f) / RIVER_ROCK_L); i++) {
         float x, y, z, sc;
-        if (!riverRock(i, x, y, z, sc)) continue;
+        if (!riverRock(i, ch, x, y, z, sc)) continue;
         RiverInfo ri = riverInfo(x, z);
         float top = y + 0.72f * sc;
         if (top < ri.level + 0.05f || (x - cam.pos.x) * (x - cam.pos.x) + (z - cam.pos.z) * (z - cam.pos.z) > 2500.f) continue;

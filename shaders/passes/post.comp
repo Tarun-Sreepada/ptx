@@ -25,7 +25,7 @@ vec3 precipitation(ivec2 p, ivec2 sz, vec3 c) {
     if (sceneD < 0.0) sceneD = 1e9;
     float T = F.camPos.w, pixAng = 2.0 * F.camUp.w / float(sz.y);
     float az = atan(d.z, d.x);
-    vec3 skyUp = sky(vec3(0, 1, 0));
+    vec3 skyUp = skyAtmo(vec3(0, 1, 0));
     vec2 wind = F.wind.xy * F.wind.z;
     vec3 sum = vec3(0);
     float cover = 0.0;
@@ -150,7 +150,7 @@ void main() {
     ivec2 sz = textureSize(hdrTex, 0);
     if (any(greaterThanEqual(p, sz))) return;
     vec3 c = ld(p, sz);
-    uint view = F.settings.w;
+    uint view = F.settings.w & 0xffffu;
     if (view >= 4u) { imageStore(outImg, p, vec4(clamp(c, 0.0, 1.0), 1)); return; }  // debug views: as is
     // lens: chromatic aberration (red and blue scaled about the centre, post1.w px at the corner)
     vec2 uv0 = (vec2(p) + 0.5) / vec2(sz);

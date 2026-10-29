@@ -7,6 +7,7 @@
 #include "gpu/pipelines.h"
 #include "gpu/swapchain.h"
 #include "gpu/textures.h"
+#include "render/occlusion.h"
 #include "render/bake.h"
 #include "render/crater_bins.h"
 #include "render/ground_vt.h"
@@ -159,6 +160,12 @@ void writeDescriptors() {
         x.pBufferInfo = &lb[i];
         w.push_back(x);
     }
+    VkDescriptorBufferInfo ob{occBuf.b, 0, VK_WHOLE_SIZE};
+    x = ws;
+    x.dstBinding = 106;
+    x.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    x.pBufferInfo = &ob;
+    w.push_back(x);
     VkDescriptorBufferInfo eb{exposureBuf.b, 0, VK_WHOLE_SIZE}, ab{lightAliasBuf.b, 0, VK_WHOLE_SIZE};
     x = ws;
     x.dstBinding = 83;

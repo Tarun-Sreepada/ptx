@@ -137,7 +137,7 @@ vec3 cloudMarch(vec3 ro, vec3 rd, float jitter, out float T) {
     float hg1 = (1.0 - 0.64) / (4.0 * PI * pow(1.0 + 0.64 - 1.6 * mu, 1.5));     // forward silver lining
     float hg2 = (1.0 - 0.09) / (4.0 * PI * pow(1.0 + 0.09 + 0.6 * mu, 1.5));     // back scatter
     float phase = mix(hg2, hg1, 0.7);
-    vec3 amb = sky(vec3(0, 1, 0)) * 1.6 + sky(normalize(vec3(rd.x, 0.05, rd.z))) * 0.4;
+    vec3 amb = skyAtmo(vec3(0, 1, 0)) * 1.6 + skyAtmo(normalize(vec3(rd.x, 0.05, rd.z))) * 0.4;
 
     // layers front to back: entry distance of each (1e9 = missed), then a three-element sort
     float a0, a1, b0, b1, ct = 1e9;
@@ -162,6 +162,57 @@ vec3 cloudMarch(vec3 ro, vec3 rd, float jitter, out float T) {
     }
     if (T < 0.01) T = 0.0;  // the march stops early once opaque: don't leave 1% for the (very bright) sun disc
     // fade into the haze near the horizon instead of a hard edge at 30 km
+    float fade = smoothstep(0.0, 0.08, rd.y);
+    T = mix(1.0, T, fade);
+    return L * fade;
+}
+
+// The cheap stand-in, at full resolution every pixel: a few fixed samples per layer with one light lookup each, no
+// jitter. It carries the sharp edges and fine shapes; cloud.comp marches the real thing at low resolution and keeps
+// only the difference (march - fake), which is smooth enough to upsample. Same layers, order and fade as cloudMarch.
+vec3 cloudFake(vec3 ro, vec3 rd, out float T) {
+    T = 1.0;
+    if (!cloudsOn()) return vec3(0);
+    vec3 s = F.sunDir.xyz, sunL = F.sunColor.rgb;
+    float mu = dot(rd, s);
+    float phase = mix((1.0 - 0.09) / (4.0 * PI * pow(1.0 + 0.09 + 0.6 * mu, 1.5)), (1.0 - 0.64) / (4.0 * PI * pow(1.0 + 0.64 - 1.6 * mu, 1.5)), 0.7);
+    vec3 amb = skyAtmo(vec3(0, 1, 0)) * 1.6 + skyAtmo(normalize(vec3(rd.x, 0.05, rd.z))) * 0.4;
+    float a0, a1, b0, b1, ct = 1e9;
+    bool hc = (F.clouds.x > 0.0 || F.clouds4.x > 0.0) && slabHit(ro, rd, F.clouds2.x, convTop(), a0, a1);
+    bool hs = F.clouds3.x > 0.0 && slabHit(ro, rd, F.clouds3.z, F.clouds3.z + F.clouds3.w, b0, b1);
+    if (F.clouds4.z > 0.0 && abs(rd.y) > 1e-3) { float t = (F.clouds4.w - ro.y) / rd.y; if (t > 0.0 && t < 1.5e5) ct = t; }
+    vec4 ord = vec4(hc ? a0 : 1e9, hs ? b0 : 1e9, ct, 0);
+    int o[3] = int[3](0, 1, 2);
+    for (int i = 0; i < 2; i++) for (int j = 0; j < 2 - i; j++)
+        if (ord[o[j]] > ord[o[j + 1]]) { int x = o[j]; o[j] = o[j + 1]; o[j + 1] = x; }
+    vec3 L = vec3(0);
+    const int N = 4;
+    for (int k = 0; k < 3 && T > 0.01; k++) {
+        int l = o[k];
+        if (ord[l] >= 1e9) break;
+        if (l == 2) {
+            float Tc;
+            L += T * cirrusMarch(ro, rd, 2.0 * F.camUp.w / float(F.res.y), amb, Tc);
+            T *= Tc;
+            continue;
+        }
+        float t0 = l == 0 ? a0 : b0, t1 = l == 0 ? a1 : b1, ds = (t1 - t0) / float(N);
+        float lb = l == 0 ? F.clouds2.x : F.clouds3.z, lh = l == 0 ? convTop() - F.clouds2.x : F.clouds3.w;
+        float ls = (l == 0 ? F.clouds2.y : F.clouds3.w) * 0.3;
+        for (int i = 0; i < N && T > 0.01; i++) {
+            vec3 p = ro + rd * (t0 + (float(i) + 0.5) * ds);
+            float d = l == 0 ? cumulusDensity(p, true) : stratusDensity(p, true);
+            if (d <= 0.0) continue;
+            float od = cloudDensity(p + s * ls, false) * ls * 2.0;
+            float beer = exp(-od), powder = 1.0 - exp(-od * 2.0);
+            float hgt = clamp((p.y - lb) / lh, 0.0, 1.0);
+            vec3 Ls = sunL * phase * mix(beer, beer * powder * 2.0, 0.5) * 2.0 + amb * mix(0.35, 1.0, hgt) / (4.0 * PI) * 4.0;
+            float a = exp(-d * ds);
+            L += T * Ls * (1.0 - a);
+            T *= a;
+        }
+    }
+    if (T < 0.01) T = 0.0;
     float fade = smoothstep(0.0, 0.08, rd.y);
     T = mix(1.0, T, fade);
     return L * fade;

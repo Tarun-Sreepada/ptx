@@ -144,7 +144,7 @@ void ui(const View& v) {
     for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++) open(ccx + dx, ccz + dz);
 
-    mapTools();
+    // mapTools(): the hand-edited world map is retired (the world comes from the seed); kept for reference
     // ---- mouse: pick, drag
     float o[3] = {v.pos[0], v.pos[1], v.pos[2]}, d[3];
     mouseRay(d);

@@ -95,7 +95,7 @@ void placeTrees(const PlacementCtx& c) {
             float x = (ix + 0.15f + 0.7f * hash2(ix + 71, iz + 3)) * TC, z = (iz + 0.15f + 0.7f * hash2(ix + 5, iz + 191)) * TC;
             float forest = vnoise(x * 0.0045f + 31.f, z * 0.0045f - 7.f) * 0.7f + vnoise(x * 0.017f, z * 0.017f + 11.f) * 0.3f;
             float painted = worldmap::treeMul(x, z);  // world map tree brush: 0 = cleared, 2 = double, also outside forests
-            if (hash2(ix * 13 + 5, iz * 7 + 1) > ((sstep(0.5f, 0.66f, forest) * 0.8f + 0.025f) * painted + std::max(painted - 1.f, 0.f) * 0.35f) * S.treeDensity)
+            if (hash2(ix * 13 + 5, iz * 7 + 1) > ((sstep(0.5f, 0.66f, forest) * 0.8f + 0.025f) * painted + std::max(painted - 1.f, 0.f) * 0.35f) * S.treeDensity * biomeTreeMul(x, z))
                 return false;
             float sc = 0.75f + 0.5f * hash2(ix + 19, iz + 41);
             uint32_t v;

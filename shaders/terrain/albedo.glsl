@@ -14,6 +14,7 @@ float grassMask(vec2 xz) {
     float painted = mapPaintAt(xz).r * 2.0;                       // world map grass brush (1 = as generated)
     float buried = 1.0 - smoothstep(0.04, 0.25, snowDepth(xz));   // under snow
     buried *= 1.0 - smoothstep(0.6, 1.0, editSlope(xz));          // nothing grows on faces steeper than ~35-45 deg
+    buried *= biomeGrass(xz);                                      // deserts, ice, salt, rock; none under the sea / lakes
     return clamp(m * painted + max(painted - 1.0, 0.0) * 0.8, 0.0, 1.0) * smoothstep(0.9, 1.7, path) * (1.0 - zoneCover(xz)) * dry * (1.0 - craterDisturbance(xz)) * buried;  // no grass on flattened (city) ground
 }
 
@@ -54,6 +55,7 @@ vec3 terrainAlbedo(vec2 xz, float farGrass) {
         ground = mix(ground, silt, 1.0 - smoothstep(r.y + 0.3, r.y + 2.5, d));
         ground = mix(ground, gravel, 1.0 - smoothstep(r.y * 0.6, r.y, d));
     }
+    ground = biomeAlbedo(xz, ground, g);
     return mix(ground, mix(vec3(0.23, 0.22, 0.2), vec3(0.3, 0.29, 0.26), vnoise(xz * 1.7)), smoothstep(0.5, 1.0, zoneCover(xz)));
 }
 #endif

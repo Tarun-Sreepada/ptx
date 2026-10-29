@@ -34,9 +34,13 @@
 
 rg::Graph graph;
 
-bool asyncCompute = true;    // BVH build on the async compute queue, overlapping the raster G-buffer
+bool asyncCompute = true;    // the async compute queue at all (fog below)
 
-bool asyncFog = true;        // volumetric fog on the async compute queue, overlapping ReSTIR DI + GI
+// BVH build on the async compute queue: measured 2026-10-28 (RTX 3070) it made frames ~2.7 ms SLOWER (the build is
+// only ~0.5 ms and, sharing the GPU, it held up the raster G-buffer), so it runs on the graphics queue by default
+bool asyncBVH = false;
+
+bool asyncFog = false;       // volumetric fog on the async compute queue: also ~2.9 ms slower per frame here (same test)
 
 // The frame as a render graph (rendergraph.h): passes declare what they read / write; barriers, queue
 // batches and timeline waits are derived. The BVH build runs on the async compute queue and overlaps the
@@ -61,7 +65,7 @@ void buildFrameGraph(uint32_t si, ImDrawData* dd) {
                     g.resource("lighting"), g.resource("denoise"), g.resource("history"), g.resource("output"), g.resource("swapchain"),
                     g.resource("probes"), g.resource("wind map"), g.resource("HDR scene"), g.resource("exposure"), g.resource("bloom"),
                     g.resource("fog"), g.resource("fog history"),
-                    asyncCompute ? rg::COMPUTE : rg::GFX, asyncCompute && asyncFog ? rg::COMPUTE : rg::GFX,
+                    asyncCompute && asyncBVH ? rg::COMPUTE : rg::GFX, asyncCompute && asyncFog ? rg::COMPUTE : rg::GFX,
                     (W + 7) / 8, (H + 7) / 8};
     // the uploads command buffer (stream.cpp models + their BLASes) is submitted first on the graphics queue
     g.add("uploads", rg::GFX, [](VkCommandBuffer) {}).write(f.models, fgc::ASB | fgc::XFER, fgc::ASW | fgc::XW);

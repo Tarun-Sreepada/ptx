@@ -1,3 +1,4 @@
+#include "gpu/offload.h"
 // ptx: a Vulkan ray-query path tracer with a streamed, destructible world.
 //   app/        command line, startup, the frame loop
 //   core/       math, limits, jobs (thread pool), profiling, input
@@ -37,6 +38,7 @@ int main(int argc, char** argv) {
     while (runFrame(opts)) {}
 
     vkDeviceWaitIdle(dev);
+    igpu::shutdown();
     graph.destroy();
     destroyScreenResources();
     dlss::shutdown();

@@ -76,9 +76,11 @@ void main() {
     bool isBaked = bakedIndirect(x0, n0, baked);
     // Checkerboard: with ReSTIR, the skipped half gets its sample from temporal reuse and its traced neighbours
     // (spatial pass); glossy paths are view dependent and always traced.
-    // Whole 8x8 tiles skip (a warp with half its lanes idle costs as much as a full one).
+    // Squares of F.settings.w >> 16 pixels: 8 and up skip whole 8x8 workgroups (a warp with half its lanes idle
+    // costs as much as a full one), finer squares look smoother but save little time.
     uvec2 tile = gl_WorkGroupID.xy;
-    bool skip = restir && (F.settings.z & FLAG_GI_CHECKER) != 0u && ((tile.x + tile.y + F.res.z) & 1u) == 1u;
+    uvec2 cell = uvec2(p) / max(F.settings.w >> 16u, 1u);
+    bool skip = restir && (F.settings.z & FLAG_GI_CHECKER) != 0u && ((cell.x + cell.y + F.res.z) & 1u) == 1u;
     rcTrain = rcHash(tile.x * 73856093u ^ tile.y * 19349663u ^ F.res.z * 83492791u) % RC_TRAIN == 0u;
     uint N = isBaked || skip ? 0u : max(F.settings.x, 1u);
     vec3 gl = vec3(0), gW = vec3(0);

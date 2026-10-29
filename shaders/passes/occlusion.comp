@@ -1,0 +1,31 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// Occlusion grid for next frame's culling (render/occlusion.cpp): the farthest G-buffer hit distance in each
+// 16 x 16 pixel tile (sky = no occluder), plus the camera it was seen from. One workgroup per tile.
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 106, std430) writeonly buffer Occ { float occ[]; };
+const uint OCC_HEADER = 16;
+
+shared uint tileMax;
+
+void main() {
+    if (gl_LocalInvocationIndex == 0) tileMax = 0u;
+    barrier();
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(p, ivec2(F.res.xy)))) {
+        float t = imageLoad(gDepth, p).x;
+        if (t < 0.0) t = 3.0e38;  // sky: nothing in front of anything
+        atomicMax(tileMax, floatBitsToUint(t));  // positive floats order like their bits
+    }
+    barrier();
+    uvec2 g = gl_NumWorkGroups.xy;
+    if (gl_LocalInvocationIndex == 0) occ[OCC_HEADER + gl_WorkGroupID.y * g.x + gl_WorkGroupID.x] = uintBitsToFloat(tileMax);
+    if (gl_GlobalInvocationID.xy == uvec2(0)) {
+        occ[0] = F.camPos.x; occ[1] = F.camPos.y; occ[2] = F.camPos.z; occ[3] = uintBitsToFloat(g.x);
+        occ[4] = F.camRight.x; occ[5] = F.camRight.y; occ[6] = F.camRight.z; occ[7] = F.camRight.w;
+        occ[8] = F.camUp.x; occ[9] = F.camUp.y; occ[10] = F.camUp.z; occ[11] = F.camUp.w;
+        occ[12] = F.camFwd.x; occ[13] = F.camFwd.y; occ[14] = F.camFwd.z; occ[15] = uintBitsToFloat(g.y);
+    }
+}

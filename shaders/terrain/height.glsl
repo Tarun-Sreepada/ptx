@@ -27,11 +27,22 @@ float farRelief(vec2 p) {
     return k * RELIEF_HEIGHT * h;
 }
 
+#include "terrain/biome.glsl"
+
 // the ground before any crater (terrain.h terrainBase)
 float groundBase(vec2 p) {
-    float h = 2.2 * tnoise(p.x * 0.022 + 10.0, p.y * 0.022) + 0.7 * tnoise(p.x * 0.07, p.y * 0.07 + 5.0) +
-              0.12 * tnoise(p.x * 0.35, p.y * 0.35) - 1.5 + farRelief(p) + editHeight(p);
-    h = riverCarve(p, h);
+    // a lake reaching p fills to its centre's ground: pass 0 evaluates that, pass 1 the point (one copy of the code)
+    vec4 L;
+    float dn, hc = 0.0, h = 0.0;
+    bool lake = lakeAt(p, L, dn);
+    for (int pass = lake ? 0 : 1; pass < 2; pass++) {
+        vec2 q = pass == 0 ? L.xy : p;
+        h = 2.2 * tnoise(q.x * 0.022 + 10.0, q.y * 0.022) + 0.7 * tnoise(q.x * 0.07, q.y * 0.07 + 5.0) +
+            0.12 * tnoise(q.x * 0.35, q.y * 0.35) - 1.5 + hills(q) + farRelief(q);
+        h = riverCarve(q, biomeShape(q, h) + editHeight(q));
+        if (pass == 0) hc = h;
+    }
+    if (lake) h = lakeShape(p, h, L, dn, hc);
     for (uint i = 0u; i < F.counts.x; i++) h = mix(h, zones[2u * i + 1u].x, zoneWeight(i, p));
     return h;
 }

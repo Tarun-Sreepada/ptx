@@ -48,6 +48,11 @@ layout(binding = 57, rgba16f) uniform image2D specImg;    // demodulated glossy 
 layout(binding = 58, rgba16f) uniform image2D hdrImg;     // the HDR scene at output resolution, before post (post.comp)
 layout(binding = 60, rgba16f) uniform image2D fogImg;     // volumetric fog, half resolution: in-scatter, transmittance
 layout(binding = 61, rgba16f) uniform image2D fogHist;
+layout(binding = 63, r16f) uniform image2D fogAge;        // frames of history behind each fog texel (volfog.comp)
+layout(binding = 64, r16f) uniform image2D fogAgeHist;
+layout(binding = 65, rgba16f) uniform image2D cloudImgA;  // sky clouds at 1/cloudDiv resolution, ping-pong (cloud.comp): rgb light, a transmittance
+layout(binding = 66, rgba16f) uniform image2D cloudImgB;
+vec4 loadCloud(uint k, ivec2 q) { return k == 0u ? imageLoad(cloudImgA, q) : imageLoad(cloudImgB, q); }
 layout(binding = 62, rgba16f) uniform image2D gVel;       // G-buffer velocity: xyz = where the surface was last frame - where it is (m)
 
 layout(push_constant) uniform PC { uint a, b, c, d; } pc;

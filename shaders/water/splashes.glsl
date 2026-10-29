@@ -17,7 +17,7 @@ float splashes(vec2 p, Flow f, float T, inout vec2 g) {
     float d = abs(f.r.x);
     if (F.water.w <= 0.0 || d < f.r.y - 3.5 || d > f.r.y) return 0.0;
     float side = f.r.x >= 0.0 ? 1.0 : -1.0;
-    float curv = -0.154 * 0.011 * sin(0.011 * p.x) - 0.189 * 0.027 * sin(0.027 * p.x + 1.3);  // centreline z''
+    float curv = (riverSlope(p.x + 1.0) - riverSlope(p.x - 1.0)) * 0.5;  // main centreline z'' (side channels: about the same)
     float outer = clamp(-side * curv * 400.0, 0.0, 1.0);
     float foam = 0.0;
     for (int j = -1; j <= 1; j++) {
@@ -27,9 +27,14 @@ float splashes(vec2 p, Flow f, float T, inout vec2 g) {
         float epoch = floor(tt / Tp), age = tt - epoch * Tp;
         if (age > 1.6 || whash(key + vec2(epoch * 7.0, 11)) > F.water.w * (0.3 + 0.6 * outer) * min(F.water.x, 1.5)) continue;
         float cx = (cell + 0.2 + 0.6 * whash(key + vec2(0, 7))) * 3.0;
-        vec4 rc = riverInfo(vec2(cx, riverCenter(cx)));
-        float dz = riverSlope(cx), inv = inversesqrt(1.0 + dz * dz);
-        vec2 c = vec2(cx, riverCenter(cx)) + vec2(-dz, 1.0) * inv * side * (rc.y - 0.35) + vec2(1.0, dz) * inv * (f.speed * 0.35 * age);
+        // the channel this point is in (main, braid or tributary), at the splash's x
+        vec4 chs[4];
+        int nch = riverChannels(cx, chs), kb = 0;
+        for (int k = 1; k < nch; k++) if (abs(p.y - chs[k].x) < abs(p.y - chs[kb].x)) kb = k;
+        if (!riverWet(chs[kb])) continue;
+        vec4 rc = riverInfoC(vec2(cx, chs[kb].x), chs[kb]);
+        float dz = chs[kb].y, inv = inversesqrt(1.0 + dz * dz);
+        vec2 c = vec2(cx, chs[kb].x) + vec2(-dz, 1.0) * inv * side * (rc.y - 0.35) + vec2(1.0, dz) * inv * (f.speed * 0.35 * age);
         foam += splashRing(p - c, age, 1.0, g);
     }
     return foam;

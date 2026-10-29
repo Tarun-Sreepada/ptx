@@ -28,6 +28,7 @@ struct Thrown {
     bool wood = false;                           // a piece of a broken tree: no craters, floats
     Xf prevXf{}; bool hasPrev = false;           // last frame's pose (motion vectors)
     float rest = 0.f;                            // seconds at rest (retire settled debris)
+    float eMax = -1.f;                           // most mechanical energy per kg it may have (rocks; -1 = not yet)
     std::shared_ptr<trees::Wood> woodPart;       // a loose part of a procedural tree: breaks again on landing
     float woodScale = 1.f; V3 woodCtr{};         // its frame: body space = woodScale * tree local - woodCtr
     uint32_t woodSeed = 0;                       // its tree's (splinters stay the same on every rebuild)

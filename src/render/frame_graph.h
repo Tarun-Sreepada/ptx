@@ -7,6 +7,8 @@ extern rg::Graph graph;
 
 extern bool asyncCompute;
 
+extern bool asyncBVH;
+
 extern bool asyncFog;
 
 void buildFrameGraph(uint32_t si, ImDrawData* dd);

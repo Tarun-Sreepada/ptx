@@ -13,6 +13,7 @@
 #include "destruction/thrown.h"
 #include "destruction/tree_damage.h"
 #include "render/culling.h"
+#include "render/occlusion.h"
 #include "scene/camera.h"
 #include "scene/characters.h"
 #include "scene/model_instances.h"
@@ -72,7 +73,7 @@ void cullTrees() {
             float R = treeR[v] * sc;
             bool vis = true;
             for (int i = 0; i < 5 && vis; i++) vis = planes[i][0] * C.x + planes[i][1] * C.y + planes[i][2] * C.z + planes[i][3] >= -R;
-            if (!vis) continue;
+            if (!vis || occluded(C, R)) continue;
             V3 dd = C - cam.pos;
             float fade = std::clamp((sqrtf(dot(dd, dd)) - d0) / band, 0.f, 1.f);
             if (fade < 1.f && numModelVisible < MAX_MODEL_INST) {
@@ -109,7 +110,7 @@ void cullTrees() {
             float R = plantR[v] * m[5];
             bool vis = true;
             for (int i = 0; i < 5 && vis; i++) vis = planes[i][0] * C.x + planes[i][1] * C.y + planes[i][2] * C.z + planes[i][3] >= -R;
-            if (!vis) continue;
+            if (!vis || occluded(C, R)) continue;
             uint32_t k = numModelVisible++;
             memcpy(xf + k * 16, m, 48);
             memcpy(xf + k * 16 + 12, &pg->meshes[v].slot, 4);
@@ -184,7 +185,7 @@ void cullTrees() {
         float R = sqrtf(dot(e, e));
         bool vis = true;
         for (int i = 0; i < 5 && vis; i++) vis = planes[i][0] * C.x + planes[i][1] * C.y + planes[i][2] * C.z + planes[i][3] >= -R;
-        if (!vis) continue;
+        if (!vis || occluded(C, R)) continue;
         Xf w = character::worldXf(*c);
         auto* mg = (GpuModel*)gc->asset->model->gpu;
         for (auto& cm : gc->meshes) {

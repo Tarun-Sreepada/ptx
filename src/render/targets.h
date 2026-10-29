@@ -10,7 +10,7 @@ enum { I_GPOS, I_GNORM, I_GALBEDO, I_GEMIS, I_PREVPOS, I_PREVNORM, I_DIRECT, I_I
 
 extern Image imgs[I_COUNT];
 
-enum { X_GMAT, X_GMAT2, X_GTAN, X_SPEC, X_HDR, X_HDROUT, X_FOG, X_FOGHIST, X_GVEL, X_COUNT };
+enum { X_GMAT, X_GMAT2, X_GTAN, X_SPEC, X_HDR, X_HDROUT, X_FOG, X_FOGHIST, X_GVEL, X_FOGAGE, X_FOGAGEHIST, X_CLOUD, X_CLOUD2, X_COUNT };
 
 // post-processing (post.glsl)
 inline constexpr uint32_t BLOOM_MIPS = 7;

@@ -28,6 +28,17 @@ struct TreeParams {
     float leafColor[3] = {0.09f, 0.19f, 0.045f}, hueVar = 0.3f, barkColor[3] = {0.16f, 0.11f, 0.07f};
     float density = 900.f, strength = 50.f;  // green wood: kg/m^3, bending strength (modulus of rupture, MPa)
     int growth = 0;                          // GROWTH_*: how the branches are laid out
+    // finer control of the branching rules (the defaults are what every preset was tuned with)
+    float branchTop = 0.97f;     // main branches stop this far up the leader (0..1)
+    float childStart = 0.2f;     // sub-branches start this far along their parent (0..1)
+    float lengthVar = 0.15f;     // random length spread (+- fraction)
+    float childTaper = 0.6f;     // sub-branches shorten toward the parent's tip by this much
+    float tipTaper = 0.3f;       // limb tip radius / base radius
+    float tierTilt = 0.5f;       // main branches: lower ones flatter, upper ones steeper by this much
+    int leavesPerCluster = 28;   // at leaf density 1
+    int maxClusters = 8;         // leaf clusters on one twig (more on long twigs, up to this)
+    float leafStart = 0.3f;      // leaves start this far along a twig (0 = all along it)
+    float innerLeaves = 1.f;     // leaves on the outer half of the last sub-branches, between their twigs (x)
     uint32_t seed = 1;
 };
 // GROWTH_RULES: recursive branching (Weber-Penn style), regular and tidy, right for conifers; GROWTH_COLONIZE: space
@@ -66,6 +77,7 @@ void defaults();  // species / bush defaults (call once before build)
 // One ModelData, mesh v = variant v (bark + leaf materials, small procedural textures). Trees stand on the
 // origin, +Y up, roughly 7-13 m tall.
 void build(ModelData& out);
+inline uint32_t buildGen = 0;  // bumped by every build(): caches of the woods / skeletons go stale
 
 // Pieces of a broken tree (imported trees, main.cpp assetBreak): stump stays standing, the rest is thrown.
 // mass = rough real mass (kg) at scale 1. colVerts / colIdx (pos3): the piece's static collider (trunk + limbs)

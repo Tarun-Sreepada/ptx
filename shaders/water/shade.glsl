@@ -26,6 +26,10 @@ Water shadeWater(ivec2 p, vec3 d, vec4 P, vec3 scene) {
     // a river drawn on the world map (its own level and flow) where the main river isn't
     vec4 mw = mapWaterAt(P.xz);
     bool drawn = mw.x > P.y + 0.003;
+    if (!drawn) {  // the sea, a lake or a pond (biome.glsl): still water at its level
+        float sw = standingWaterAt(P.xz);
+        if (sw > P.y + 0.003) { mw = vec4(sw, 0.0, 0.0, 40.0); drawn = true; }
+    }
     if (!drawn && (F.river.x <= 0.0 || !riverNear(P.xz, RIVER_BANK))) return w;
     vec3 o = F.camPos.xyz;
     vec4 rb = riverInfo(P.xz);
@@ -103,7 +107,7 @@ Water shadeWater(ivec2 p, vec3 d, vec4 P, vec3 scene) {
     vec2 g = mix(waveGrad(q0), waveGrad(q1), blend) * (0.012 + 0.05 * turb + 0.012 * f.speed);
     // wind ripples, deep-water dispersion
     vec3 lw = windAt(xz);  // local wind map: gust fronts roughen the water as they pass
-    float wa = atan(lw.y, lw.x), ws = length(lw.xy);
+    float wa = atan(lw.y, lw.x + 1e-6), ws = length(lw.xy);
     for (int i = 0; i < 4; i++) {
         float lam = 0.9 * pow(0.6, float(i)), k = 2.0 * PI / lam, ang = wa + (float(i) - 1.5) * 0.55;
         vec2 dw = vec2(cos(ang), sin(ang));
@@ -124,7 +128,7 @@ Water shadeWater(ivec2 p, vec3 d, vec4 P, vec3 scene) {
     float nv = max(dot(n, v), 0.0);
     w.fres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
     float vis = visible(w.p + vec3(0, 0.03, 0), F.sunDir.xyz, 1e4) ? cloudShadow(w.p) : 0.0;
-    vec3 skyUp = sky(vec3(0, 1, 0));
+    vec3 skyUp = skyAtmo(vec3(0, 1, 0));
     vec3 amb = F.sunColor.rgb * vis * max(F.sunDir.y, 0.0) * (0.25 / PI) + skyUp;  // in-scatter: mostly forward, little comes back up
 
     // reflection
@@ -138,13 +142,14 @@ Water shadeWater(ivec2 p, vec3 d, vec4 P, vec3 scene) {
     if (!h.hit) refl = skyWithSun(r);
     else {
         uint s = seedFor(p, 91u);
-        vec3 skyAmb = sky(normalize(h.n + vec3(0, 1, 0))) * (0.55 + 0.45 * h.n.y) * h.s.ao;
+        // 1.001: a face looking straight down would make h.n + up zero (normalize -> NaN)
+        vec3 skyAmb = skyAtmo(normalize(h.n + vec3(0, 1.001, 0))) * (0.55 + 0.45 * h.n.y) * h.s.ao;
         refl = h.albedo * (sunDirect(h.p, h.n, h.mat, s) + treeNEE(h.p, h.n, h.mat, s) + skyAmb) + h.emis;
         // aerial perspective along the reflected ray
         if (F.params2.w > 0.0) {
             float hh = max(h.p.y + VIEW_H, 0.0);
             vec3 T = exp(-(BR * exp(-hh / HR) + vec3(BME * exp(-hh / HM))) * F.params2.w * h.t);
-            refl = refl * T + sky(normalize(vec3(r.x, max(r.y, 0.03), r.z))) * (1.0 - T);
+            refl = refl * T + skyAtmo(normalize(vec3(r.x, max(r.y, 0.03), r.z))) * (1.0 - T);
         }
     }
 
@@ -196,6 +201,9 @@ Water shadeWater(ivec2 p, vec3 d, vec4 P, vec3 scene) {
         }
     }
     w.col = mix(scene, col, smoothstep(0.0, 0.03, thick));
+    // a NaN here goes into DLSS-RR's history and spreads until the whole river is black: never let one out
+    if (any(isnan(w.col)) || any(isinf(w.col))) w.col = scene;
+    if (any(isnan(w.n))) w.n = vec3(0, 1, 0);
     return w;
 }
 
@@ -207,7 +215,7 @@ vec3 underwaterView(vec3 col, float dist) {
     if (depth <= 0.02) return col;
     vec3 sigma = vec3(0.45, 0.12, 0.08) * max(F.waterCol.w, 0.05) * 3.0;  // red goes first
     vec3 T = exp(-sigma * min(dist, 200.0));
-    vec3 lit = F.sunColor.rgb * max(F.sunDir.y, 0.0) * 0.05 + sky(vec3(0, 1, 0)) * 0.3;
+    vec3 lit = F.sunColor.rgb * max(F.sunDir.y, 0.0) * 0.05 + skyAtmo(vec3(0, 1, 0)) * 0.3;
     vec3 murk = F.waterCol.rgb * lit * exp(-0.15 * depth);
     return col * T + murk * (1.0 - T);
 }

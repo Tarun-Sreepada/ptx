@@ -6,10 +6,8 @@
 #include "sky/clouds.glsl"
 
 // Clear sky + sun disc, then the cloud layer over both (clouds hide the sun).
-vec3 skyWithSun(vec3 d) {
-    float jit = float(hashu(floatBitsToUint(d.x * 7.0 + d.z) ^ hashu(floatBitsToUint(d.y)) ^ (F.res.z * 0x9e3779b9u))) / 4294967295.0;
-    float T;
-    vec3 cl = cloudMarch(F.camPos.xyz, d, jit, T);
+// cl, T: the cloud layer's light and transmittance along d (cloudMarch, or cloud.comp's low-res copy)
+vec3 skyWithClouds(vec3 d, vec3 cl, float T) {
     vec3 c = sky(d) * T + cl;
     // stars and the Milky Way behind everything (fade out under the day sky by themselves)
     if (d.y > 0.0 && F.night0.w > 0.0) c += (starField(d, 2.0 * F.camUp.w / float(F.res.y)) + milkyWay(d)) * F.night0.w * T;
@@ -20,5 +18,12 @@ vec3 skyWithSun(vec3 d) {
     c += min(moonDisc(d), vec3(500.0)) * T * T * T;
     c += lightningBolt(d, 1e9);
     return c;
+}
+
+vec3 skyWithSun(vec3 d) {
+    float jit = float(hashu(floatBitsToUint(d.x * 7.0 + d.z) ^ hashu(floatBitsToUint(d.y)) ^ (F.res.z * 0x9e3779b9u))) / 4294967295.0;
+    float T;
+    vec3 cl = cloudMarch(F.camPos.xyz, d, jit, T);
+    return skyWithClouds(d, cl, T);
 }
 #endif

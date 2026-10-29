@@ -1,3 +1,4 @@
+#include "gpu/offload.h"
 #include "app/startup.h"
 
 #include <algorithm>
@@ -159,6 +160,7 @@ void startup(const LaunchOptions& o) {
     createWindow(o.shotPath != nullptr);
     T.stage("window");
     initVulkan(o.validate);
+    igpu::init(instance, phys);
     T.stage("vulkan");
     createSwapchain();
     if (resFollowWindow && swapExtent.width >= MIN_SWAP_EXTENT) {

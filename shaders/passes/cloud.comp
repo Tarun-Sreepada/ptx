@@ -1,0 +1,40 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "core/common.glsl"
+
+// The traced clouds at 1/cloudDiv resolution, stored as the correction to cloudFake (march - fake: rgb light,
+// a transmittance): primary.comp adds it, upsampled, to the full-resolution fake. The march is jittered,
+// so each texel is blended with last frame's (the other image of the pair), found by direction: clouds are far
+// enough that only the camera's turning moves them on screen.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const float CLOUD_BLEND = 0.15;  // weight of this frame's march once history exists
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 n = F.cloudRes.yz;
+    if (any(greaterThanEqual(q, n))) return;
+    int div = F.cloudRes.x;
+    uint cur = uint(F.cloudRes.w) & 1u;
+    ivec2 fp = min(q * div + div / 2, ivec2(F.res.xy) - 1);
+    vec3 d = cameraRay(fp);
+    float T;
+    vec3 cl = cloudMarch(F.camPos.xyz, d, bn(fp, 21u), T);
+    float Tf;
+    vec3 fk = cloudFake(F.camPos.xyz, d, Tf);
+    vec4 res = vec4(cl - fk, T - Tf);
+    if ((uint(F.cloudRes.w) & 2u) == 0u) {
+        float z = dot(d, F.prevFwd.xyz);
+        if (z > 1e-3) {
+            vec2 ndc = vec2(dot(d, F.prevRight.xyz) / (F.prevUp.w * F.prevRight.w), dot(d, F.prevUp.xyz) / F.prevUp.w) / z;
+            vec2 px = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * vec2(F.res.xy) - 0.5 - F.jitter.zw;
+            ivec2 hq = ivec2(floor(px / float(div)));
+            if (all(greaterThanEqual(hq, ivec2(0))) && all(lessThan(hq, n))) {
+                vec4 h = loadCloud(1u - cur, hq);
+                if (!any(isnan(h)) && !any(isinf(h))) res = mix(h, res, CLOUD_BLEND);
+            }
+        }
+    }
+    if (cur == 0u) imageStore(cloudImgA, q, res);
+    else imageStore(cloudImgB, q, res);
+}

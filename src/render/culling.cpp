@@ -9,6 +9,7 @@
 #include "app/settings.h"
 #include "core/limits.h"
 #include "core/math.h"
+#include "render/occlusion.h"
 #include "render/targets.h"
 #include "scene/camera.h"
 #include "scene/model_instances.h"
@@ -52,6 +53,7 @@ void cullModels() {
     PROF_FUNC();
     drawRuns.clear();
     numModelVisible = 0;
+    beginOcclusion(cam.pos);
     if (!numModelInst || !S.rasterPrimary) return;
     float planes[5][4];
     frustumPlanes(planes);
@@ -60,6 +62,8 @@ void cullModels() {
     float* xf = (float*)modelXfBuf.map;
     for (uint32_t i = 0; i < numModelInst; i++) {
         if (!visibleItems[i]) continue;
+        V3 lo{aabb[0][i], aabb[1][i], aabb[2][i]}, hi{aabb[3][i], aabb[4][i], aabb[5][i]}, e = (hi - lo) * 0.5f;
+        if (occluded(lo + e, sqrtf(dot(e, e)))) continue;
         const DrawItem& it = drawItems[i];
         uint32_t k = numModelVisible++;
         memcpy(xf + k * 16, it.xf.m, 48);

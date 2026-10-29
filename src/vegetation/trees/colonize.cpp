@@ -151,7 +151,7 @@ Plan colonizeTree(const TreeParams& P0, uint32_t seed, uint32_t leafMat, uint32_
     struct Start { int node; int parentSeg; float parentR; V parentDir; int level; };
     std::vector<Start> todo{{0, -1, 0.f, V{0, 1, 0}, 0}};
     std::vector<int> segOfNode(nodes.size(), -1);  // the segment a node lies on (branches hang off it)
-    int leafN = std::max(2, (int)lroundf(28.f * P.leafDensity));
+    int leafN = std::max(2, (int)lroundf(P.leavesPerCluster * P.leafDensity));
     while (!todo.empty()) {
         Start st = todo.back();
         todo.pop_back();

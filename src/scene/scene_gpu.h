@@ -17,4 +17,6 @@ void prepareSceneGeometry();
 // Creates every static buffer / image (prepareSceneGeometry must have finished).
 void buildScene();
 void createAccels();
-void cmdBuildScene(VkCommandBuffer cb);
+void cmdBuildTerrainBLAS(VkCommandBuffer cb);
+void cmdBuildGrassBLAS(VkCommandBuffer cb);
+void cmdBuildTLAS(VkCommandBuffer cb);

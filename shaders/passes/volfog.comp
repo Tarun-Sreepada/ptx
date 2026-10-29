@@ -10,6 +10,11 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 const int STEPS = 16;
+const float SETTLED_FRAMES = 4.0;  // history this long: the traced fog alone
+const float MAX_AGE = 32.0;
+
+shared vec4 shCur[64];
+shared float shDist[64];  // the sample's ray length (-1: outside the image)
 const float BANK_RANGE = 500.0;  // m: how far fog banks are marched (they're seen from afar)
 
 // Fog banks: patches of low ground fog (radiation fog in the hollows, mist along the river) drifting with the wind,
@@ -61,14 +66,22 @@ void main() {
     ivec2 hp = ivec2(gl_GlobalInvocationID.xy);
     ivec2 hs = F.fogRes.yz;
     int div = F.fogRes.x;
-    if (any(greaterThanEqual(hp, hs))) return;
+    bool inside = all(lessThan(hp, hs));
     bool banks = F.fogBank2.w > 0.5;
-    if (F.fog0.w < 0.5 && !banks) { imageStore(fogImg, hp, vec4(0, 0, 0, 1)); return; }
-    ivec2 fp = min(hp * div + div / 2, ivec2(F.res.xy) - 1);
+    if (F.fog0.w < 0.5 && !banks) {  // (uniform: the whole dispatch leaves)
+        if (inside) { imageStore(fogImg, hp, vec4(0, 0, 0, 1)); imageStore(fogAge, hp, vec4(0)); }
+        return;
+    }
+    ivec2 fp = min(min(hp, hs - 1) * div + div / 2, ivec2(F.res.xy) - 1);
     float depth = imageLoad(gDepth, fp).r;
     vec3 o = F.camPos.xyz, d = cameraRay(fp);
     float maxD = banks ? max(F.fog1.y, BANK_RANGE) : F.fog1.y;
     float tEnd = depth < 0.0 ? maxD : min(depth, maxD);
+    if (depth < 0.0 && d.y < 0.3) {  // sky pixel: the far-field ground (sky.glsl) still ends the ray, so no fog or
+        bool hit;                     // shafts show through the distant mountains
+        farGround(o, d, hit);
+        if (hit) tEnd = min(tEnd, farHitT);
+    }
     float dt = tEnd / float(STEPS);
     float jit = bn(fp, 12u);
     uint s = seedFor(fp, 13u);
@@ -77,7 +90,7 @@ void main() {
     vec3 sun = F.sunColor.rgb;
     bool sunOn = sun.r + sun.g + sun.b > 0.0;
     float phSun = hg(dot(d, F.sunDir.xyz), F.fog0.z);
-    vec3 amb = sky(vec3(0, 1, 0)) * 0.6 + sky(normalize(vec3(d.x, 0.15, d.z))) * 0.4;  // isotropic sky light
+    vec3 amb = skyAtmo(vec3(0, 1, 0)) * 0.6 + skyAtmo(normalize(vec3(d.x, 0.15, d.z))) * 0.4;  // isotropic sky light
     // one light from the list, evaluated at one random step (estimator x STEPS)
     float pl;
     uint li = F.fog1.x > 0.5 ? sampleLightAlias(bn(fp, 14u), pl) : NO_LIGHT;
@@ -93,7 +106,10 @@ void main() {
         float sig = fogDensity(p, time);
         if (sig <= 1e-7) continue;
         vec3 S = amb;
-        if (sunOn && visible(p, F.sunDir.xyz, 1e4)) S += sun * cloudShadow(p) * phSun;
+        // god rays: shadowed by everything in the BVH, but only inside the drawn world: a point past the terrain mesh
+        // has nothing around it to cast shafts, so it's lit like the far field (clouds only) instead of streaking on
+        bool shafts = F.fogRes.w != 0 && length(p.xz - F.terrainP.xy) < F.terrainP.w;
+        if (sunOn && (!shafts || visible(p, F.sunDir.xyz, 1e4))) S += sun * cloudShadow(p) * phSun;
         if (i == kl && li != NO_LIGHT && pl > 0.0) {
             vec3 wi;
             float dist;
@@ -109,15 +125,50 @@ void main() {
         T *= a;
     }
     vec4 cur = vec4(Lin, T);
+    if (any(isnan(cur)) || any(isinf(cur))) cur = vec4(0, 0, 0, 1);
+
+    // the fallback: this frame's samples around this one, weighted by how alike their ray lengths are (fog in
+    // front of a near trunk doesn't bleed into the distance behind it)
+    uint slot = gl_LocalInvocationIndex;
+    shCur[slot] = cur;
+    shDist[slot] = inside ? tEnd : -1.0;
+    barrier();
+    if (!inside) return;
+    ivec2 l = ivec2(gl_LocalInvocationID.xy);
+    vec4 fb = vec4(0);
+    float ws = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 m = l + ivec2(x, y);
+            if (any(lessThan(m, ivec2(0))) || any(greaterThan(m, ivec2(7)))) continue;
+            uint k = uint(m.y * 8 + m.x);
+            float dk = shDist[k];
+            if (dk < 0.0) continue;
+            float w = exp(-abs(dk - tEnd) / (0.1 * tEnd + 0.5)) * exp(-0.25 * float(x * x + y * y));
+            fb += shCur[k] * w;
+            ws += w;
+        }
+    fb = ws > 0.0 ? fb / ws : cur;
 
     // temporal: blend with last frame's fog for (roughly) the same world point
     vec3 ref = o + d * min(tEnd, 40.0);
     vec2 pp;
-    float alpha = 1.0;
-    vec4 hist = cur;
+    float age = 0.0;
+    vec4 hist = fb;
     if (prevPixel(ref, pp)) {
         ivec2 q = ivec2(floor(pp / float(div)));
-        if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, hs))) { hist = imageLoad(fogHist, q); alpha = F.fog1.w; }
+        if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, hs))) {
+            hist = imageLoad(fogHist, q);
+            age = imageLoad(fogAgeHist, q).r;
+            if (any(isnan(hist)) || isnan(age)) { hist = fb; age = 0.0; }
+            age = clamp(age, 0.0, MAX_AGE);
+            // something changed a lot here (dust, a blast, a light): the history is stale, start over (smoothly)
+            float lh = lum(hist.rgb), lf = lum(fb.rgb);
+            if (abs(lh - lf) > 0.6 * max(lh, lf) + 1e-3 || abs(hist.a - fb.a) > 0.2) age = min(age, 1.0);
+        }
     }
-    imageStore(fogImg, hp, mix(hist, cur, alpha));
+    float alpha = max(1.0 / (age + 1.0), F.fog1.w);
+    vec4 smp = mix(fb, cur, clamp(age / SETTLED_FRAMES, 0.0, 1.0));  // young: the blur; settled: the traced sample
+    imageStore(fogImg, hp, mix(hist, smp, alpha));
+    imageStore(fogAge, hp, vec4(min(age + 1.0, MAX_AGE)));
 }

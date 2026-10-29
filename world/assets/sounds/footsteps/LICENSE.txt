@@ -1,0 +1,4 @@
+All footstep sounds here are CC0 (public domain).
+grass, concrete, wood, snow: Kenney "Impact Sounds" 1.0 (www.kenney.nl), CC0
+dirt: Kenney "RPG Audio" (www.kenney.nl), CC0
+water: "6 short water splashes" by ezwa / qubodup, opengameart.org/content/6-short-water-splashes, CC0

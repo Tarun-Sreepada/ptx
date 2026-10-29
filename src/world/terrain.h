@@ -16,8 +16,13 @@ struct Zone {
     float tile = 2.f;   // metres per texture repeat
 };
 
+// The world seed: mixed into the base hash, so the ground, hills, rivers, trees, plants, rocks and dirt all follow it
+// (seed 0 = mix 0 = the original world). Change it through setWorldSeed (terrain_query / settings), never directly.
+struct WorldGen { uint32_t seed = 0; float hilliness = 0.35f; };
+inline WorldGen gWorld;
+inline uint32_t gSeedMix = 0;
 inline float hash2(int x, int z) {
-    uint32_t h = (uint32_t)x * 374761393u + (uint32_t)z * 668265263u;
+    uint32_t h = (uint32_t)x * 374761393u + (uint32_t)z * 668265263u + gSeedMix;
     h = (h ^ (h >> 13)) * 1274126177u;
     return ((h ^ (h >> 16)) & 0xFFFFFF) / float(0xFFFFFF);
 }
@@ -35,23 +40,99 @@ inline float naturalHeight(float x, float z) {
     return 2.2f * vnoise(x * 0.022f + 10, z * 0.022f) + 0.7f * vnoise(x * 0.07f, z * 0.07f + 5) + 0.12f * vnoise(x * 0.35f, z * 0.35f) - 1.5f;
 }
 // River: a meandering channel running along +x (downstream), carved into the natural terrain before the flatten
-// zones. Mirrored in shaders/terrain/river.glsl, parameters in the UBO's river vector.
-struct RiverParams { float width = 6.f, depth = 1.8f, level = -1.4f, slope = 0.0003f, bumps = 0.f; };  // half-width, depth (m), bed roughness (m)
+// zones. Mirrored in shaders/terrain/river.glsl, parameters in the UBO's river vectors. Along it the seed places braids
+// (the river splits around an island and joins again) and tributaries (side streams that curve in and converge).
+struct RiverParams {
+    float width = 6.f, depth = 1.8f, level = -1.4f, slope = 0.0003f, bumps = 0.f;  // half-width, depth (m), bed roughness (m)
+    float widthVar = 0.6f;                   // how much the width wanders along the river
+    float braids = 0.45f, tributaries = 0.5f;  // share of the stretches that split / that a side stream joins
+};
 inline RiverParams gRiver;
+// the main channel's meander, from the seed (setWorldSeed); seed 0 keeps the original curve
+struct RiverShape { float a1 = 14.f, a2 = 7.f, f1 = 0.011f, f2 = 0.027f, p1 = 0.f, p2 = 1.3f; };
+inline RiverShape gRiverShape;
 inline constexpr float RIVER_Z = -58.f, RIVER_BANK = 16.f;  // centreline offset, bank blend width past the water edge
-inline float riverCenter(float x) { return RIVER_Z + 14.f * sinf(0.011f * x) + 7.f * sinf(0.027f * x + 1.3f); }
-inline float riverSlope(float x) { return 0.154f * cosf(0.011f * x) + 0.189f * cosf(0.027f * x + 1.3f); }
-struct RiverInfo { float d, w, depth, level; };  // signed distance across the flow (+ = left bank), half-width, depth, water level
-inline RiverInfo riverInfo(float x, float z) {
-    float dz = riverSlope(x);
-    return {(z - riverCenter(x)) / sqrtf(1.f + dz * dz), gRiver.width * (0.8f + 0.45f * vnoise(x * 0.008f + 3.f, 7.5f)),
-            gRiver.depth * (0.45f + 1.f * vnoise(x * 0.013f, 2.5f)), gRiver.level - gRiver.slope * x};
+inline constexpr float BRAID_CELL = 420.f, TRIB_CELL = 650.f;  // m of river per braid / tributary candidate
+inline constexpr float RIVER_MIN_W = 1.5f;  // m half-width: below this a channel dries up (full width at twice this)
+inline float riverCenter(float x) { const RiverShape& r = gRiverShape; return RIVER_Z + r.a1 * sinf(r.f1 * x + r.p1) + r.a2 * sinf(r.f2 * x + r.p2); }
+inline float riverSlope(float x) { const RiverShape& r = gRiverShape; return r.a1 * r.f1 * cosf(r.f1 * x + r.p1) + r.a2 * r.f2 * cosf(r.f2 * x + r.p2); }
+// Width along the river (x half-width): long reaches where it narrows into a run or spreads over a flat, plus the
+// shorter wobble; a narrow stretch is deeper (about the same water gets through), a wide one shallower.
+inline float riverWidthF(float x) {
+    float reach = vnoise(x * 0.0025f + 11.f, 4.5f), local = vnoise(x * 0.008f + 3.f, 7.5f);
+    return std::clamp(1.f + gRiver.widthVar * ((reach - 0.5f) * 2.2f + (local - 0.5f) * 0.9f), 0.35f, 2.4f);
 }
-// parabolic bed inside the water, gentle bank rising out of it, blended back into the natural ground
-inline float riverCarve(float x, float z, float h) {
-    if (fabsf(z - riverCenter(x)) > 3.f * gRiver.width + RIVER_BANK + 6.f) return h;  // cheap reject (w <= 1.25 width, |slope| < 0.35)
+// One channel at a given x: centre z, its dz/dx, width multiplier, water level above the main river's (m)
+struct RiverChan { float c, dz, wm, dl; };
+inline float riverHash(int i, int k) { return hash2(i * 92821 + k * 131, 7177 + k); }
+// Every channel present at x (main first): the main river, a braid around an island, tributaries curving in.
+inline int riverChannels(float x, RiverChan out[4]) {
+    constexpr float PI_ = 3.14159265f;
+    float c0 = riverCenter(x), s0 = riverSlope(x), mainW = 1.f;
+    int n = 1;
+    if (gRiver.braids > 0.f) {  // split -> island -> rejoin, the two arms sharing the water
+        int j = (int)floorf(x / BRAID_CELL);
+        if (riverHash(j, 1) < gRiver.braids) {
+            float st = j * BRAID_CELL + 40.f + 60.f * riverHash(j, 2), L = 180.f + 140.f * riverHash(j, 3), u = (x - st) / L;
+            if (u > 0.f && u < 1.f) {
+                float side = riverHash(j, 4) < 0.5f ? -1.f : 1.f, sep = gRiver.width * (3.5f + 3.f * riverHash(j, 5)), sn = sinf(PI_ * u);
+                out[n++] = {c0 + side * sep * sn * sn, s0 + side * sep * PI_ / L * sinf(2.f * PI_ * u), 1.f - 0.3f * sn * sn, 0.f};
+                mainW = 1.f - 0.25f * sn * sn;
+            }
+        }
+    }
+    out[0] = {c0, s0, mainW, 0.f};
+    if (gRiver.tributaries > 0.f) {  // a side stream from upstream, curving in to join at xj (this cell's or the next)
+        int k0 = (int)floorf(x / TRIB_CELL);
+        for (int k = k0; k <= k0 + 1 && n < 4; k++) {
+            if (riverHash(k, 11) >= gRiver.tributaries) continue;
+            float xj = k * TRIB_CELL + TRIB_CELL * (0.55f + 0.35f * riverHash(k, 12)), Lt = 260.f + 200.f * riverHash(k, 13), u = (xj - x) / Lt;
+            if (u <= 0.f || u >= 1.f) continue;
+            float side = riverHash(k, 14) < 0.5f ? -1.f : 1.f, D = 120.f + 120.f * riverHash(k, 15);
+            float t = std::clamp((u - 0.8f) / 0.2f, 0.f, 1.f), wm = 0.45f * (1.f - t * t * (3.f - 2.f * t));
+            if (wm < 0.03f) continue;
+            out[n++] = {c0 + side * D * powf(u, 1.6f), s0 - side * D * 1.6f * powf(u, 0.6f) / Lt, wm, 0.004f * (xj - x)};
+        }
+    }
+    // too small to be a river: narrower than RIVER_MIN_W it tapers away to nothing (a dry stretch) until the water
+    // is wide enough again; a side channel that vanishes is dropped, the main one stays as a zero-width marker
+    float wf = riverWidthF(x);
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        float w = gRiver.width * wf * out[i].wm, t = std::clamp((w - RIVER_MIN_W) / RIVER_MIN_W, 0.f, 1.f);
+        out[i].wm *= t * t * (3.f - 2.f * t);
+        if (i == 0 || out[i].wm > 1e-3f) out[m++] = out[i];
+    }
+    return m;
+}
+inline bool riverWet(const RiverChan& c) { return c.wm > 1e-3f; }
+struct RiverInfo { float d, w, depth, level, dz; };  // signed distance across the flow (+ = left bank), half-width, depth, water level, channel dz/dx
+inline RiverInfo riverInfoC(float x, float z, const RiverChan& ch) {
+    float wf = riverWidthF(x);
+    return {(z - ch.c) / sqrtf(1.f + ch.dz * ch.dz), std::max(gRiver.width * wf * ch.wm, 1e-3f),
+            gRiver.depth * (0.45f + 1.f * vnoise(x * 0.013f, 2.5f)) / sqrtf(wf) * (0.5f + 0.5f * ch.wm), gRiver.level - gRiver.slope * x + ch.dl, ch.dz};
+}
+// the channel whose water is nearest (or that the point is in)
+inline RiverInfo riverInfo(float x, float z) {
+    RiverChan ch[4];
+    int n = riverChannels(x, ch);
+    RiverInfo best = riverInfoC(x, z, ch[0]);
+    for (int i = 1; i < n; i++) {  // (side channels are always wet; a dry main one has ~0 width, so it loses)
+        RiverInfo r = riverInfoC(x, z, ch[i]);
+        if (fabsf(r.d) - r.w < fabsf(best.d) - best.w) best = r;
+    }
+    return best;
+}
+// how far outside every channel's water x, z is (m; <= 0 in the water): hills keep away from the river
+inline float riverEdgeDist(float x, float z) {
     RiverInfo r = riverInfo(x, z);
+    return fabsf(r.d) - r.w;
+}
+// parabolic bed inside the water, gentle bank rising out of it, blended back into the natural ground; the deepest
+// of the channels wins where they meet
+inline float riverCarveC(float x, float z, float h, const RiverInfo& r) {
     float d = fabsf(r.d), c = d / r.w;
+    if (d > r.w + RIVER_BANK) return h;
     float prof = d < r.w ? r.level - r.depth * (1.f - c * c) : r.level + 0.35f * (d - r.w);
     if (gRiver.bumps > 0.f && d < r.w + 2.f) {  // uneven bed: humps, scours and stony ridges, strongest mid-channel
         float n = vnoise(x * 0.45f, z * 0.45f) * 0.6f + vnoise(x * 1.3f + 7.f, z * 1.3f) * 0.4f - 0.5f;
@@ -60,20 +141,46 @@ inline float riverCarve(float x, float z, float h) {
     float t = std::clamp((d - r.w - 2.f) / (RIVER_BANK - 2.f), 0.f, 1.f);
     return prof + (h - prof) * t * t * (3 - 2 * t);
 }
+inline float riverCarve(float x, float z, float h) {
+    RiverChan ch[4];
+    int n = riverChannels(x, ch);
+    float out = h;
+    for (int i = 0; i < n; i++) {
+        if (!riverWet(ch[i]) || fabsf(z - ch[i].c) > 3.f * gRiver.width * ch[i].wm + RIVER_BANK + 6.f) continue;  // dry / cheap reject (w <= 2.4 width, |slope| < 0.35)
+        out = std::min(out, riverCarveC(x, z, h, riverInfoC(x, z, ch[i])));
+    }
+    return out;
+}
+// Rolling hills from the seed (gWorld.hilliness: 0 flat .. 1 big hills), rising away from the river so the valley
+// stays where the water is. Mirrored in height.glsl.
+inline constexpr float HILL_HEIGHT = 45.f;
+inline float hills(float x, float z) {
+    if (gWorld.hilliness <= 0.f) return 0.f;
+    float n = vnoise(x * 0.0035f + 101.f, z * 0.0035f - 57.f) * 0.6f + vnoise(x * 0.009f - 13.f, z * 0.009f + 29.f) * 0.3f +
+              vnoise(x * 0.024f + 7.f, z * 0.024f + 3.f) * 0.1f;
+    float e = riverEdgeDist(x, z), t = std::clamp((e - 20.f) / 220.f, 0.f, 1.f);
+    return gWorld.hilliness * HILL_HEIGHT * n * n * t * t * (3.f - 2.f * t);
+}
 // Rocks in the channel, one candidate per RIVER_ROCK_L stretch. Deterministic so the water shader (riverRock) knows where
 // they are and shapes the surface around them. Rock mesh: radius ~1, y in [-0.52, 0.72] (buildRockMesh).
 // Boulders are sized and lifted so they break the surface; small stones sit on the bed.
 inline constexpr float RIVER_ROCK_L = 2.5f;
-inline bool riverRock(int i, float& x, float& y, float& z, float& sc) {
-    if (hash2(i * 7 + 3, 811) > 0.65f) return false;
-    bool boulder = hash2(i * 5 + 1, 823) < 0.35f;
-    x = (i + hash2(i, 853)) * RIVER_ROCK_L;
-    float hc = hash2(i * 3 + 2, 839) * 2.f - 1.f;  // small stones mostly in the shallows
-    float c = boulder ? hc * 0.75f : (hc < 0 ? -1.f : 1.f) * (0.45f + 0.5f * fabsf(hc)), dz = riverSlope(x);
-    RiverInfo r = riverInfo(x, 0.f);
-    z = riverCenter(x) + c * r.w * sqrtf(1.f + dz * dz);
+// k: the channel (riverChannels order: main, braid, tributaries); every channel gets its own rocks.
+inline constexpr int RIVER_ROCK_CHANNELS = 4;
+inline bool riverRock(int i, int k, float& x, float& y, float& z, float& sc) {
+    int hi = i + k * 1000003;  // each channel its own layout
+    x = (i + hash2(hi, 853)) * RIVER_ROCK_L;
+    RiverChan ch[4];
+    if (k >= riverChannels(x, ch) || !riverWet(ch[k])) return false;
+    // more rocks where the river spreads wide, fewer where it narrows (riverWidthF, and narrower side channels)
+    if (hash2(hi * 7 + 3, 811) > std::min(0.65f * riverWidthF(x) * ch[k].wm, 0.97f)) return false;
+    bool boulder = hash2(hi * 5 + 1, 823) < 0.35f;
+    float hc = hash2(hi * 3 + 2, 839) * 2.f - 1.f;  // small stones mostly in the shallows
+    float c = boulder ? hc * 0.75f : (hc < 0 ? -1.f : 1.f) * (0.45f + 0.5f * fabsf(hc)), dz = ch[k].dz;
+    RiverInfo r = riverInfoC(x, 0.f, ch[k]);
+    z = ch[k].c + c * r.w * sqrtf(1.f + dz * dz);
     float bed = r.level - r.depth * (1.f - c * c);
-    sc = boulder ? std::min(std::max(0.9f + 0.8f * hash2(i, 857), (r.level - bed) * 0.9f), 2.6f) : 0.25f + 0.45f * hash2(i, 859);
+    sc = boulder ? std::min(std::max(0.9f + 0.8f * hash2(hi, 857), (r.level - bed) * 0.9f), 2.6f) : 0.25f + 0.45f * hash2(hi, 859);
     y = boulder ? std::max(bed - 0.3f * sc, r.level - 0.4f * sc) : bed - 0.3f * sc;
     // the bed slopes across the channel: find its lowest point under the rock's footprint and keep the
     // mesh bottom (y - 0.52 sc) dug into it, so no side floats (mirrored in river.glsl)
@@ -87,11 +194,10 @@ inline bool riverRock(int i, float& x, float& y, float& z, float& sc) {
 // Surface current (m/s, world xz) for a given flow strength; mirrors riverFlow() in water/flow.glsl.
 inline void riverVelocity(float x, float z, float strength, float v[2]) {
     v[0] = v[1] = 0.f;
-    if (fabsf(z - riverCenter(x)) > 3.f * gRiver.width + 2.f) return;
     RiverInfo r = riverInfo(x, z);
     float c = fabsf(r.d) / r.w;
     if (c >= 1.f) return;
-    float dz = riverSlope(x), inv = 1.f / sqrtf(1.f + dz * dz);
+    float dz = r.dz, inv = 1.f / sqrtf(1.f + dz * dz);
     float U = strength * 1.3f * (gRiver.width * gRiver.depth) / (r.w * r.depth) * powf(std::max(1.f - c * c, 0.02f), 0.35f);
     v[0] = U * inv;
     v[1] = U * dz * inv;
@@ -99,7 +205,6 @@ inline void riverVelocity(float x, float z, float strength, float v[2]) {
 
 // 0 in the water, 1 on dry ground (placement)
 inline float riverDry(float x, float z, float margin) {
-    if (fabsf(z - riverCenter(x)) > 3.f * gRiver.width + margin + 2.f) return 1.f;
     RiverInfo r = riverInfo(x, z);
     return fabsf(r.d) > r.w + margin ? 1.f : 0.f;
 }
@@ -120,6 +225,8 @@ inline float applyZones(float x, float z, float h, const Zone* zones, int nz) {
     return h;
 }
 // The ground before any crater: what an impact digs into.
+
+#include "world/biome.h"
 
 // Hills and mountain ranges toward the horizon: ridged noise rising past RELIEF_START from the origin (outside the
 // world map's 4 km square and the world's cells, which stay as they are), held down near the river so it runs
@@ -143,7 +250,7 @@ inline float farRelief(float x, float z) {
     return k * RELIEF_HEIGHT * h;
 }
 inline float terrainBase(float x, float z, const Zone* zones, int nz) {
-    return applyZones(x, z, riverCarve(x, z, naturalHeight(x, z) + farRelief(x, z) + editHeight(x, z)), zones, nz);
+    return applyZones(x, z, lakeCarve(x, z, riverCarve(x, z, biomeShape(x, z, naturalHeight(x, z) + hills(x, z) + farRelief(x, z)) + editHeight(x, z))), zones, nz);
 }
 
 // ---------------------------------------------------------------- impact craters
@@ -214,6 +321,7 @@ inline float terrainHeight(float x, float z, const Zone* zones, int nz) { return
 // 8 lanes of the same math. Used to fill physics heightfields (129 x 129 samples per tile).
 inline __m256 hash2x8(__m256i x, __m256i z) {
     __m256i h = _mm256_add_epi32(_mm256_mullo_epi32(x, _mm256_set1_epi32(374761393)), _mm256_mullo_epi32(z, _mm256_set1_epi32(668265263)));
+    h = _mm256_add_epi32(h, _mm256_set1_epi32((int)gSeedMix));
     h = _mm256_mullo_epi32(_mm256_xor_si256(h, _mm256_srli_epi32(h, 13)), _mm256_set1_epi32(1274126177));
     h = _mm256_and_si256(_mm256_xor_si256(h, _mm256_srli_epi32(h, 16)), _mm256_set1_epi32(0xFFFFFF));
     return _mm256_div_ps(_mm256_cvtepi32_ps(h), _mm256_set1_ps(float(0xFFFFFF)));
@@ -237,7 +345,8 @@ inline __m256 terrainHeight8(__m256 x, __m256 z, const Zone* zones, int nz) {
     h = _mm256_sub_ps(h, s(1.5f));
     alignas(32) float hx[8], xx[8], zz[8];
     _mm256_store_ps(hx, h); _mm256_store_ps(xx, x); _mm256_store_ps(zz, z);
-    for (int i = 0; i < 8; i++) hx[i] = riverCarve(xx[i], zz[i], hx[i] + editHeight(xx[i], zz[i]));  // scalar: only near the channel
+    // scalar per lane, as terrainBase: the horizon mountains (0 inside 3 km), world map edits, the river channel
+    for (int i = 0; i < 8; i++) hx[i] = lakeCarve(xx[i], zz[i], riverCarve(xx[i], zz[i], biomeShape(xx[i], zz[i], hx[i] + hills(xx[i], zz[i]) + farRelief(xx[i], zz[i])) + editHeight(xx[i], zz[i])));
     h = _mm256_load_ps(hx);
     __m256 zero = _mm256_setzero_ps();
     for (int i = 0; i < nz; i++) {

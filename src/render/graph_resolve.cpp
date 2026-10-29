@@ -121,5 +121,6 @@ void addResolvePasses(const FrameGraphCtx& f) {
         r.srcSubresource = r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         r.extent = {W, H, 1};
         vkCmdCopyImage(cb, ximgs[X_FOG].img, VK_IMAGE_LAYOUT_GENERAL, ximgs[X_FOGHIST].img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        vkCmdCopyImage(cb, ximgs[X_FOGAGE].img, VK_IMAGE_LAYOUT_GENERAL, ximgs[X_FOGAGEHIST].img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
     }).read(fogR, XFER, XR).read(hdr, XFER, XR).write(fogHistR, XFER, XW);
 }

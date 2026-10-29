@@ -11,6 +11,7 @@
 #include "render/targets.h"
 #include "app/frame_state.h"
 #include "ui/panels/panels.h"
+#include "ui/search.h"
 
 void drawUI() {
     ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
@@ -26,6 +27,7 @@ void drawUI() {
     ImGui::Separator();
     ImGui::Text("FPS %.1f  (CPU frame %.2f ms)", 1000.f / cpuFrameMs, cpuFrameMs);
     ImGui::Text("GPU %.2f ms  -> GPU-bound max %.0f fps", gpuEmaTotal, gpuEmaTotal > 0 ? 1000.f / gpuEmaTotal : 0.f);
+    ui::beginSearch();
     panelPerformanceStats();
     panelBenchmark();
     panelFrameRateTarget();
@@ -35,6 +37,7 @@ void drawUI() {
     panelExposureTonemapBloom();
     panelLensCameraEffects();
     panelDenoiserDebugView();
+    panelWorldGen();
     panelCameraMovement();
     panelSunSkyExposure();
     panelClouds();
@@ -54,5 +57,6 @@ void drawUI() {
     panelWorldStreaming();
     panelAudioRayTraced();
     panelController();
+    ui::endSearch();
     ImGui::End();
 }

@@ -56,7 +56,9 @@ float cellX(int i) { return ORIGIN + (i + 0.5f) * CELL; }
 
 void init(const std::string& worldDir) {
     dir = worldDir + "terrain/";
-    FILE* f = fopen((dir + "map.bin").c_str(), "rb");
+    // the world comes from the world seed alone now: hand edits in map.bin are no longer loaded (the editor is off too)
+    constexpr bool LOAD_HAND_EDITS = false;
+    FILE* f = LOAD_HAND_EDITS ? fopen((dir + "map.bin").c_str(), "rb") : nullptr;
     if (!f) return;
     char magic[8] = {};
     int n = 0;

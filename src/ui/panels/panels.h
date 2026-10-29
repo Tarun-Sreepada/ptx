@@ -26,6 +26,7 @@ void panelImpactMarksDust();  // "Impact marks & dust"
 void panelThrowRocksDestruction();  // "Throw rocks & destruction"
 void panelCharacters();  // "Characters"
 void panelBakedInteriors();  // "Baked interiors"
+void panelWorldGen();        // "World generation": seed, hilliness
 void panelWorldStreaming();  // "World streaming"
 void panelAudioRayTraced();  // "Audio (ray traced)"
 void panelController();  // "Controller"

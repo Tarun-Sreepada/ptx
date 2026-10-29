@@ -29,7 +29,7 @@ VkDescriptorSetLayout setLayout;
 const char* PIPE_NAMES[P_COUNT] = {"sky", "terrain", "grass", "grass_tail", "primary", "restir_initial", "restir_spatial", "gi",
                                    "restir_gi_spatial", "temporal", "atrous", "composite", "dlss_prep", "dlss_tonemap", "impostor_bake",
                                    "probe_bake", "probe_filter", "wind", "exposure", "bloom", "post", "present_hdr", "volfog", "surface_fx",
-                                   "worldsim", "radcache_resolve", "skin", "vtgen"};
+                                   "worldsim", "radcache_resolve", "skin", "vtgen", "occlusion", "cloud"};
 constexpr uint32_t PUSH_CONSTANT_BYTES = 16;     // 4 x uint (every compute pass)
 constexpr uint32_t CACHE_MAGIC = 0x50544350;     // "PCTP": header in front of the driver's blob
 const char* CACHE_FILE = "pipeline_cache.bin";   // in the build folder, next to shaders/
@@ -220,6 +220,7 @@ void createPipelineLayout() {
     for (uint32_t i = 99; i <= 101; i++) add(i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);  // ground virtual texture
     add(102, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // its tile requests
     for (uint32_t i = 103; i <= 105; i++) add(i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);          // vtgen.comp outputs
+    add(106, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);                                              // occlusion grid
     VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     lci.bindingCount = (uint32_t)b.size();
     lci.pBindings = b.data();

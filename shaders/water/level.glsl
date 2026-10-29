@@ -38,6 +38,8 @@ float waterLevelAt(vec2 p) {
     }
     float drawn = mapWaterAt(p).x;  // a river drawn on the world map
     if (drawn > -999.0) return drawn;
+    float sw = standingWaterAt(p);  // sea, lakes, ponds
+    if (sw > -1e8 && sw > groundHeight(p)) return sw;
     if (F.river.x <= 0.0 || !riverNear(p, 1.0)) return -1e9;
     vec4 r = riverInfo(p);
     if (abs(r.x) > r.y + 1.0) return -1e9;

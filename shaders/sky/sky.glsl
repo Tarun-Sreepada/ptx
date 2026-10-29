@@ -28,10 +28,10 @@ vec3 skyAtmo(vec3 d) {
 // everything would see black. Instead march the large-scale terrain noise (the same function, coarse terms only)
 // out to 40 km, shade with the ground colour, sun + sky light (no shadows), and fade into the aerial haze.
 // Cheap: only rays that leave the mesh pay, ~28 steps.
-const int FAR_STEPS = 40;
+const int FAR_STEPS = 96;  // most rays end well before: the steps stretch where the ground is far below
 const float FAR_GROWTH = 1.16;  // each step this much further: fine enough not to step over the far ridges
 float farHeight(vec2 p) {
-    return 2.2 * tnoise(p.x * 0.022 + 10.0, p.y * 0.022) + 0.7 * tnoise(p.x * 0.07, p.y * 0.07 + 5.0) - 1.5 + farRelief(p);
+    return biomeShape(p, 2.2 * tnoise(p.x * 0.022 + 10.0, p.y * 0.022) + 0.7 * tnoise(p.x * 0.07, p.y * 0.07 + 5.0) - 1.5 + hills(p) + farRelief(p));
 }
 // Forest cover past the tree range, from the same forest noise the placement uses (main.cpp candidate): the far
 // field gets a canopy layer (colour + ~9 m of height) so forests continue to the horizon as low-detail LOD.
@@ -45,12 +45,21 @@ float farHeightC(vec2 p, out float cov) {
     return farHeight(p) + cov * 9.0 * crowns;
 }
 float cloudShadow(vec3 x);  // clouds.glsl
+// highest the far field gets (m): the horizon mountains + the base noise + canopy
+const float FAR_TOP = RELIEF_HEIGHT * 1.1 + 15.0;
+float farHitT;  // distance along the ray of farGround's last hit
 vec3 farGround(vec3 o, vec3 d, out bool hit) {
     hit = false;
     float horiz = length(d.xz);
-    if (d.y >= 0.0 || horiz < 1e-4) return vec3(0);
+    if (horiz < 1e-4) return vec3(0);
     float ext = F.terrainP.w;  // the terrain mesh reaches this far from its centre
     float t = max(0.9 * ext / horiz, 0.0), tEnd = 40000.0;
+    // looking up: the peaks past the view distance still rise above the eye; a ray already above every summit
+    // where the far field starts can't meet one
+    if (d.y >= 0.0) {
+        if (o.y + d.y * t > FAR_TOP) return vec3(0);
+        tEnd = min(tEnd, (FAR_TOP - o.y) / max(d.y, 1e-6));
+    }
     float prevT = t, prevGap = 1e30;
     for (int i = 0; i < FAR_STEPS && t < tEnd; i++) {
         vec3 q = o + d * t;
@@ -62,14 +71,19 @@ vec3 farGround(vec3 o, vec3 d, out bool hit) {
             break;
         }
         prevT = t; prevGap = gap;
-        t = t * FAR_GROWTH + 20.0;
+        // step by the height above the ground (the relief is never steeper than ~1:1), so near a ridge the samples
+        // close in on it instead of jumping over it: fixed geometric steps hopped across crests at a spacing tied to
+        // the camera, and the far mountains changed shape as it moved
+        t += clamp(gap * 0.8, 4.0 + t * 0.002, t * (FAR_GROWTH - 1.0) + 20.0);
     }
     if (!hit) {  // the mean ground plane
+        if (d.y >= 0.0) return vec3(0);  // passed over every peak: sky
         float tp = (o.y + 1.5) / -d.y;
         if (tp > tEnd * 1.5) return vec3(0);
         t = tp;
         hit = true;
     }
+    farHitT = t;
     vec3 P = o + d * t;
     float e = max(2.0, t * 0.004), cov, c2;
     farHeightC(P.xz, cov);
@@ -91,7 +105,7 @@ vec3 farGround(vec3 o, vec3 d, out bool hit) {
     return col * T + skyAtmo(normalize(vec3(d.x, 0.03, d.z))) * (1.0 - T);
 }
 vec3 sky(vec3 d) {
-    if (d.y < 0.0) {
+    if (d.y < 0.3) {  // (above that no ray from below the summits reaches one)
         bool hit;
         vec3 g = farGround(F.camPos.xyz, d, hit);
         if (hit) return g;

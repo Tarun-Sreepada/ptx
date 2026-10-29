@@ -78,6 +78,19 @@ void fillWorldState(UBO& u) {
         jitter[1] = halton(frameIndex % 64, 3) - 0.5f;
     } else jitter[0] = jitter[1] = 0;
     u.river[0] = gRiver.width; u.river[1] = gRiver.depth; u.river[2] = gRiver.level; u.river[3] = gRiver.slope;
+    u.river2[0] = gRiver.widthVar; u.river2[1] = gRiver.braids; u.river2[2] = gRiver.tributaries; u.river2[3] = gWorld.hilliness;
+    u.riverShape[0] = gRiverShape.a1; u.riverShape[1] = gRiverShape.a2; u.riverShape[2] = gRiverShape.f1; u.riverShape[3] = gRiverShape.f2;
+    u.riverShape2[0] = gRiverShape.p1; u.riverShape2[1] = gRiverShape.p2;
+    u.worldSeed[0] = gSeedMix;
+    {
+        const BiomeParams& b = gBiome;
+        for (int i = 0; i < 16; i++) u.biomeA[i / 4][i % 4] = i < B_COUNT ? b.amount[i] : 0.f;
+        const float p[28] = {b.on ? 1.f : 0.f, b.size, b.blend, b.spawn, b.temp, b.moist, b.ocean, b.oceanScale,
+                             b.seaLevel, b.oceanDepth, b.beach, b.lakes, b.lakeSize, b.ponds, b.duneH, b.duneL,
+                             b.wind, b.mesaH, b.terrace, b.canyonD, b.mountainH, b.glacierH, b.volcanoH, b.karstH,
+                             b.relief, 0.f, 0.f, 0.f};
+        memcpy(u.biomeP, p, sizeof p);
+    }
     u.water[0] = S.flow; u.water[1] = S.clarity; u.water[2] = S.foam; u.water[3] = S.splash;
     u.water2[0] = S.foamTrail; u.water2[1] = S.viewDist; u.water2[2] = S.treeDensity; u.water2[3] = gRiver.bumps;
     u.waterCol[0] = S.murk[0]; u.waterCol[1] = S.murk[1]; u.waterCol[2] = S.murk[2]; u.waterCol[3] = S.absorb;
